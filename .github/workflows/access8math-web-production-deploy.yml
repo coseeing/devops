@@ -1,0 +1,40 @@
+name: Access8Math Web Production Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployTag:
+        description: "tag to deploy"
+        required: true
+        type: string
+
+env:
+  s3_bucket: "access8math-web"
+  new_origin_path: "/production/${{github.event.inputs.deployTag}}"
+  distribution_config_old_filename: "dist-config-old.json"
+
+jobs:
+  deployment:
+    environment: access8math_web_production
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
+
+      - name: log deployTag
+        run: echo $new_origin_path
+
+      - name: extract config file
+        run: aws cloudfront get-distribution --id "${{env.CLOUDFRONT_DISTRIBUTION_ID}}" > $distribution_config_old_filename
+
+      - name: cat the config file
+        run: cat $distribution_config_old_filename
