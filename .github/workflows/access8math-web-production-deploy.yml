@@ -31,10 +31,10 @@ jobs:
           aws-region: ap-northeast-1
 
       - name: log deployTag
-        run: echo $new_origin_path
+        run: echo ${{new_origin_path}}
 
       - name: extract config file
-        run: aws cloudfront get-distribution --id "${{env.CLOUDFRONT_DISTRIBUTION_ID}}" > $distribution_config_old_filename
+        run: aws cloudfront get-distribution --id ${{env.CLOUDFRONT_DISTRIBUTION_ID}} > $distribution_config_old_filename
 
       - name: cat the config file
         run: cat $distribution_config_old_filename
