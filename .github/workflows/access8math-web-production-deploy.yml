@@ -33,3 +33,7 @@ jobs:
       - name: sync to main directory
         run: |
           aws s3 sync "s3://${s3_bucket}/${origin_path}/" "s3://${s3_bucket}/${destination_path}/"
+
+      - name: create invalidation
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
