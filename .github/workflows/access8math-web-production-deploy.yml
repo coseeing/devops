@@ -10,8 +10,8 @@ on:
 
 env:
   s3_bucket: "access8math-web"
-  new_origin_path: "/production/${{github.event.inputs.deployTag}}"
-  distribution_config_old_filename: "dist-config-old.json"
+  origin_path: "production/${{github.event.inputs.deployTag}}"
+  destination_path: "production/main"
 
 jobs:
   deployment:
@@ -30,11 +30,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
           aws-region: ap-northeast-1
 
-      - name: log deployTag
-        run: echo $new_origin_path
-
-      - name: extract config file
-        run: aws cloudfront get-distribution --id ${{secrets.CLOUDFRONT_DISTRIBUTION_ID}} > $distribution_config_old_filename
-
-      - name: cat the config file
-        run: cat $distribution_config_old_filename
+      - name: sync to main directory
+        run: |
+          aws s3 sync "s3://${s3_bucket}/${origin_path}/" "s3://${s3_bucket}/${destination_path}/"
