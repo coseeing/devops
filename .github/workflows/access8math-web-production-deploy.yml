@@ -34,7 +34,7 @@ jobs:
         run: echo $new_origin_path
 
       - name: extract config file
-        run: aws cloudfront get-distribution --id $CLOUDFRONT_DISTRIBUTION_ID > $distribution_config_old_filename
+        run: aws cloudfront get-distribution --id ${{vars.CLOUDFRONT_DISTRIBUTION_ID}} > $distribution_config_old_filename
 
       - name: cat the config file
         run: cat $distribution_config_old_filename
