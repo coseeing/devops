@@ -1,0 +1,39 @@
+{
+  "family": "ally-village-production",
+  "requiresCompatibilities": [
+    "EC2"
+  ],
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "ally-village-production",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "ally-village-production-3000-tcp",
+          "containerPort": 3000,
+          "hostPort": 3000,
+          "protocol": "tcp",
+          "appProtocol": "http"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-create-group": "true",
+          "awslogs-group": "/ecs/ally-village-production",
+          "awslogs-region": "ap-northeast-1",
+          "awslogs-stream-prefix": "ecs"
+        },
+        "secretOptions": []
+      }
+    }
+  ],
+  "cpu": "512",
+  "memory": "512",
+  "volumes": [],
+  "networkMode": "awsvpc"
+}
