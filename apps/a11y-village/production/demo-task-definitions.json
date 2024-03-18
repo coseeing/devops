@@ -1,5 +1,6 @@
 {
   "family": "a11y-village-production",
+  "executionRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
   "requiresCompatibilities": [
     "EC2"
   ],
