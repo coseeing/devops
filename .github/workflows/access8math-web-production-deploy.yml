@@ -5,6 +5,7 @@ on:
     inputs:
       deployTag:
         description: "tag to deploy"
+        default: "latest"
         required: true
         type: string
 
