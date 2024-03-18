@@ -30,7 +30,7 @@ jobs:
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: ${{vars.TASK_DEFINITION_PATH}}
-          container-name: ally-village-production
+          container-name: a11y-village-production
           image: ${{vars.ECR_ARN}}/demo-node-app:${{github.event.inputs.deployTag}}
           environment-variables: |
             TEST_VAR=from github action

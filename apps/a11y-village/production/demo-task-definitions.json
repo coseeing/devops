@@ -1,5 +1,5 @@
 {
-  "family": "ally-village-production",
+  "family": "a11y-village-production",
   "requiresCompatibilities": [
     "EC2"
   ],
@@ -9,11 +9,11 @@
   },
   "containerDefinitions": [
     {
-      "name": "ally-village-production",
+      "name": "a11y-village-production",
       "essential": true,
       "portMappings": [
         {
-          "name": "ally-village-production-3000-tcp",
+          "name": "a11y-village-production-3000-tcp",
           "containerPort": 3000,
           "hostPort": 3000,
           "protocol": "tcp",
@@ -24,7 +24,7 @@
         "logDriver": "awslogs",
         "options": {
           "awslogs-create-group": "true",
-          "awslogs-group": "/ecs/ally-village-production",
+          "awslogs-group": "/ecs/a11y-village-production",
           "awslogs-region": "ap-northeast-1",
           "awslogs-stream-prefix": "ecs"
         },
