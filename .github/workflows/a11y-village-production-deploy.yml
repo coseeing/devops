@@ -34,7 +34,6 @@ jobs:
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          force-new-deployment: ${{github.event.inputs.forceNewDeployment}}
           task-definition: ${{vars.TASK_DEFINITION_PATH}}
           container-name: a11y-village-production
           image: ${{vars.ECR_ARN}}/demo-node-app:${{github.event.inputs.deployTag}}
@@ -46,3 +45,4 @@ jobs:
           service: ${{vars.ECS_SERVICE}}
           cluster: ${{vars.ECS_CLUSTER}}
           wait-for-service-stability: true
+          force-new-deployment: ${{github.event.inputs.forceNewDeployment}}
