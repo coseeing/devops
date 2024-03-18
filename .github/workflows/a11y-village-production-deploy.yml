@@ -29,9 +29,9 @@ jobs:
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: ${TASK_DEFINITION_PATH}
+          task-definition: ${{vars.TASK_DEFINITION_PATH}}
           container-name: ally-village-production
-          image: ${ECR_ARN}/demo-node-app:${github.event.inputs.deployTag}
+          image: ${{vars.ECR_ARN}}/demo-node-app:${github.event.inputs.deployTag}
           environment-variables: |
             TEST_VAR=from github action
 
@@ -39,6 +39,6 @@ jobs:
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${ECS_SERVICE}
-          cluster: ${ECS_CLUSTER}
+          service: ${{vars.ECS_SERVICE}}
+          cluster: ${{vars.ECS_CLUSTER}}
           wait-for-service-stability: true
