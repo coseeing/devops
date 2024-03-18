@@ -5,8 +5,13 @@ on:
     inputs:
       deployTag:
         description: "tag to deploy"
+        default: "latest"
         required: true
         type: string
+      forceNewDeployment:
+        description: "should force a new deployment or not"
+        default: false
+        type: boolean
 
 jobs:
   deployment:
@@ -29,6 +34,7 @@ jobs:
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
+          force-new-deployment: ${{github.event.inputs.forceNewDeployment}}
           task-definition: ${{vars.TASK_DEFINITION_PATH}}
           container-name: a11y-village-production
           image: ${{vars.ECR_ARN}}/demo-node-app:${{github.event.inputs.deployTag}}
