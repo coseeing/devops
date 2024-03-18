@@ -31,7 +31,7 @@ jobs:
         with:
           task-definition: ${{vars.TASK_DEFINITION_PATH}}
           container-name: ally-village-production
-          image: ${{vars.ECR_ARN}}/demo-node-app:${github.event.inputs.deployTag}
+          image: ${{vars.ECR_ARN}}/demo-node-app:${{github.event.inputs.deployTag}}
           environment-variables: |
             TEST_VAR=from github action
 
