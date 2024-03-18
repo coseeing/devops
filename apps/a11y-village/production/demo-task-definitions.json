@@ -11,6 +11,12 @@
     {
       "name": "a11y-village-production",
       "essential": true,
+      "environment": [
+        {
+          "name": "TEST_VAR",
+          "value": "defined from task definition json"
+        }
+      ],
       "portMappings": [
         {
           "name": "a11y-village-production-3000-tcp",
