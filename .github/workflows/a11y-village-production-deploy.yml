@@ -36,7 +36,7 @@ jobs:
         with:
           task-definition: ${{vars.TASK_DEFINITION_PATH}}
           container-name: a11y-village-production
-          image: ${{vars.ECR_ARN}}/demo-node-app:${{github.event.inputs.deployTag}}
+          image: ${{vars.ECR_ARN}}/a11yvillage-server:${{github.event.inputs.deployTag}}
 
       - name: Deploy Amazon ECS task definition
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
