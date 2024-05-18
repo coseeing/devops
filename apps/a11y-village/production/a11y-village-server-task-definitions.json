@@ -1,0 +1,47 @@
+{
+  "family": "a11y-village-production-server",
+  "executionRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
+  "requiresCompatibilities": [
+    "EC2"
+  ],
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "a11y-village-production-server",
+      "essential": true,
+      "environment": [
+        {
+          "name": "TEST_VAR",
+          "value": "defined from task definition json"
+        }
+      ],
+      "portMappings": [
+        {
+          "name": "a11y-village-production-8000-tcp",
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp",
+          "appProtocol": "http"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-create-group": "true",
+          "awslogs-group": "/ecs/a11y-village-production-server",
+          "awslogs-region": "ap-northeast-1",
+          "awslogs-stream-prefix": "ecs"
+        },
+        "secretOptions": []
+      }
+    }
+  ],
+  "cpu": "512",
+  "memory": "512",
+  "volumes": [],
+  "networkMode": "awsvpc"
+}
