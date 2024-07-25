@@ -1,5 +1,5 @@
 {
-  "family": "a11y-village-production-server",
+  "family": "a11y-village-production-web",
   "executionRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
   "requiresCompatibilities": [
