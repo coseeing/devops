@@ -1,6 +1,7 @@
 {
-  "family": "a11y-village-production",
+  "family": "a11y-village-production-web",
   "executionRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::622913514517:role/ecsTaskExecutionRole",
   "requiresCompatibilities": [
     "EC2"
   ],
@@ -10,23 +11,21 @@
   },
   "containerDefinitions": [
     {
-      "name": "a11y-village-production",
+      "name": "a11y-village-production-web",
       "essential": true,
       "environment": [
         {
-          "name": "TEST_VAR",
-          "value": "defined from task definition json"
-        }
-      ],
-      "secrets": [
+          "name": "NEXT_PUBLIC_API_URL",
+          "value": "https://a11yvillage-api-demo.coseeing.org/"
+        },
         {
-          "name": "SECRET_VAR",
-          "valueFrom": "arn:aws:secretsmanager:ap-northeast-1:622913514517:secret:prod/a11y-village/secret-for-test-2-KVkjmF"
+          "name": "NEXT_PUBLIC_RESOURCE_URL",
+          "value": "https://a11yvillage.s3.ap-northeast-1.amazonaws.com/"
         }
       ],
       "portMappings": [
         {
-          "name": "a11y-village-production-3000-tcp",
+          "name": "a11y-village-production-web-3000-tcp",
           "containerPort": 3000,
           "hostPort": 3000,
           "protocol": "tcp",
@@ -37,7 +36,7 @@
         "logDriver": "awslogs",
         "options": {
           "awslogs-create-group": "true",
-          "awslogs-group": "/ecs/a11y-village-production",
+          "awslogs-group": "/ecs/a11y-village-production-web",
           "awslogs-region": "ap-northeast-1",
           "awslogs-stream-prefix": "ecs"
         },
