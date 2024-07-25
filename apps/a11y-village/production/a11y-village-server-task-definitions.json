@@ -45,7 +45,7 @@
       ],
       "portMappings": [
         {
-          "name": "a11y-village-production-8000-tcp",
+          "name": "a11y-village-production-server-8000-tcp",
           "containerPort": 8000,
           "hostPort": 8000,
           "protocol": "tcp",

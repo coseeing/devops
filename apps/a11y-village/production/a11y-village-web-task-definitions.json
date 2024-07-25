@@ -25,7 +25,7 @@
       ],
       "portMappings": [
         {
-          "name": "a11y-village-production-3000-tcp",
+          "name": "a11y-village-production-web-3000-tcp",
           "containerPort": 3000,
           "hostPort": 3000,
           "protocol": "tcp",
