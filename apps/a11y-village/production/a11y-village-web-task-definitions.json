@@ -45,7 +45,7 @@
     }
   ],
   "cpu": "512",
-  "memory": "512",
+  "memory": "1024",
   "volumes": [],
   "networkMode": "awsvpc"
 }
