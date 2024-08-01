@@ -16,7 +16,7 @@
       "environment": [
         {
           "name": "NEXT_PUBLIC_API_URL",
-          "value": "https://a11yvillage-api-demo.coseeing.org/"
+          "value": "https://api.a11yvillage.coseeing.org/"
         },
         {
           "name": "NEXT_PUBLIC_RESOURCE_URL",
