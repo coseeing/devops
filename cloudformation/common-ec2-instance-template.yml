@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for creating EC2 instances with same
+  permission policy, AZ, and existing security groups
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: EC2 instance type
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0b20f552f63953f0e
+    Description: AMI ID for the EC2 instance (default is Ubuntu 24.04 in ap-northeast-1)
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-northeast-1c
+    Description: The Availability Zone to launch the instance into
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+  InstanceName:
+    Type: String
+    Default: coseeing-instance
+    Description: Name tag for the EC2 instance
+  SecurityGroups:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: List of security group IDs to attach to the EC2 instance
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      AvailabilityZone: !Ref AvailabilityZone
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds: !Ref SecurityGroups
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceName
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - coseeing-ec2-common
+
+Outputs:
+  InstanceId:
+    Description: The Instance ID
+    Value: !Ref EC2Instance
+  PublicDNS:
+    Description: Public DNS of the EC2 instance
+    Value: !GetAtt EC2Instance.PublicDnsName
