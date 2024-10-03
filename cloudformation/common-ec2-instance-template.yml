@@ -24,7 +24,12 @@ Parameters:
     Description: Name tag for the EC2 instance
   SecurityGroups:
     Type: List<AWS::EC2::SecurityGroup::Id>
+    Default: "sg-098baa9d7eaf501a8,sg-0d260cbf1556be14b,sg-09786ad8171652b3b"
     Description: List of security group IDs to attach to the EC2 instance
+  DiskSize:
+    Type: Number
+    Default: 8
+    Description: Size of the root EBS volume in GB
 
 Resources:
   EC2Instance:
@@ -36,6 +41,11 @@ Resources:
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref EC2InstanceProfile
       SecurityGroupIds: !Ref SecurityGroups
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
       Tags:
         - Key: Name
           Value: !Ref InstanceName
