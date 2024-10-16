@@ -27,6 +27,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ansible
+          ansible-galaxy collection install community.docker
 
       - name: Run Ansible Playbook
         env:
