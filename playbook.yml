@@ -5,8 +5,13 @@
   collections:
     - community.docker
   tasks:
+    - name: Install docker Python library
+      pip:
+        name: docker
+        executable: pip3
+
     - name: Get Running Status
-      docker_compose:
+      docker_compose_v2:
         project_src: /workspace/a11yvillageCrontab/avc
         state: present
       register: compose_result
