@@ -1,0 +1,11 @@
+- name: Run ls command on EC2 
+  hosts: ec2
+  gather_facts: false
+  tasks:
+    - name: run ls
+      shell: ls
+      register: ls_output
+
+    - name: show ls result
+      debug:
+        var: ls_output.stdout_lines

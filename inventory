@@ -1,0 +1,2 @@
+[ec2]
+18.136.240.171 ansible_user=ubuntu

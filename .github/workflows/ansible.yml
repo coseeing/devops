@@ -1,0 +1,35 @@
+name: Run Ansible
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployTag:
+        description: "tag to deploy"
+        default: "latest"
+        required: true
+        type: string
+
+jobs:
+  ansible:
+    environment: a11y-village-production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set SSH Key
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Run Ansible Playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
+        run: |
+          ansible-playbook -i inventory playbook.yml
