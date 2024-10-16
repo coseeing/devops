@@ -16,10 +16,6 @@
         state: present
       register: compose_result
 
-    - name: Show Running Status
+    - name: Show compose_result Detail info
       debug:
-        msg: |
-          Service Status：
-          {% for service in compose_result.services %}
-          - {{ service.service }}: {{ service.current_state }}
-          {% endfor %}
+        var: compose_result
