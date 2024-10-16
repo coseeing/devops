@@ -70,6 +70,12 @@
                 - MARIADB_DATABASE=a11yvillage
                 - ALLOWED_HOSTS=*
 
+    - name: Update the repository cache and update package "unzip" to latest version using default
+      apt:
+        name: unzip
+        state: latest
+        update_cache: yes
+
     - name: Install AWS CLI v2
       shell: |
         curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
