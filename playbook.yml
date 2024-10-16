@@ -2,17 +2,77 @@
   hosts: ec2
   become: true
   become_user: root
+  vars:
+    docker_compose_dir: /home/ubuntu
+    secret_name: prod/rdsuser/a11yvillage
+    secret_region: ap-northeast-1
   collections:
     - community.docker
+    - community.aws
   tasks:
+
+    - name: Set ansible_python_interpreter to use the installed Python
+      set_fact:
+        ansible_python_interpreter: /usr/bin/python3
+
     - name: Install docker Python library
       pip:
-        name: docker
+        name: 
+          - docker
+          - boto3
+          - botocore
         executable: pip3
 
-    - name: Get Running Status
+    - name: Get info from AWS secret manager
+      set_fact:
+        secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
+
+    - name: Set fact from secret_json 
+      set_fact:
+        SECRET_KEY: "{{ secret_data.SECRET_KEY }}"
+        MARIADB_USER: "{{ secret_data.username }}"
+        MARIADB_PASSWORD: "{{ secret_data.password }}"
+        MARIADB_HOST: "{{ secret_data.host }}"
+        MARIADB_PORT: "{{ secret_data.port }}"
+        MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
+
+    - name: Create .env file
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        content: |
+          SECRET_KEY={{ SECRET_KEY }}
+          MARIADB_USER={{ MARIADB_USER }}
+          MARIADB_PASSWORD={{ MARIADB_PASSWORD }}
+          MARIADB_HOST={{ MARIADB_HOST }}
+          MARIADB_PORT={{ MARIADB_PORT }}
+          MARIADB_DATABASE={{ MARIADB_DATABASE }}
+          ALLOWED_HOSTS=*
+
+    - name: Copy docker-compose.yml Document
+      copy:
+        dest: "{{ docker_compose_dir }}/docker-compose.yml"
+        content: |
+          version: "3.7"
+
+          services:
+            a11yvillage-server:
+              container_name: a11yvillage-server
+              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
+              restart: always
+              network_mode: "host"
+              command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
+              environment:
+                - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
+                - MARIADB_USER=a11yvillage
+                - MARIADB_PASSWORD=a11y@w125
+                - MARIADB_HOST=127.0.0.1
+                - MARIADB_PORT=3306
+                - MARIADB_DATABASE=a11yvillage
+                - ALLOWED_HOSTS=*
+
+    - name: Run
       docker_compose_v2:
-        project_src: /workspace/a11yvillageCrontab/avc
+        project_src: "{{ docker_compose_dir }}"
         state: present
       register: compose_result
 

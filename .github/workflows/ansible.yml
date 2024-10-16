@@ -10,9 +10,12 @@ on:
         type: string
 
 jobs:
-  ansible:
+  deploy:
     environment: a11y-village-production
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -23,14 +26,30 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Install Ansible
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies in virtual environment
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ansible
-          ansible-galaxy collection install community.docker
+          which python
+          python -m venv venv
+          source venv/bin/activate
+          which python
+          pip install --upgrade pip
+          pip install ansible boto3 botocore
+          ansible-galaxy collection install community.docker community.aws --upgrade
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
 
       - name: Run Ansible Playbook
         env:
           ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
+          source venv/bin/activate
           ansible-playbook -i inventory playbook.yml
