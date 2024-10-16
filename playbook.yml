@@ -70,6 +70,20 @@
                 - MARIADB_DATABASE=a11yvillage
                 - ALLOWED_HOSTS=*
 
+    - name: Install AWS CLI v2
+      shell: |
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+        unzip /tmp/awscliv2.zip -d /tmp
+        sudo /tmp/aws/install
+      args:
+        creates: /usr/local/bin/aws
+
+    - name: Login ECR using AWS CLI
+      shell: |
+        aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
+      register: ecr_login
+      no_log: true
+
     - name: Run
       docker_compose_v2:
         project_src: "{{ docker_compose_dir }}"
