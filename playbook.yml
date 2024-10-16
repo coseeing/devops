@@ -1,11 +1,20 @@
-- name: Run ls command on EC2 
+- name: Show Docker Compose Running Status
   hosts: ec2
-  gather_facts: false
+  become: true
+  become_user: root
+  collections:
+    - community.docker
   tasks:
-    - name: run ls
-      shell: ls
-      register: ls_output
+    - name: Get Running Status
+      docker_compose:
+        project_src: /workspace/a11yvillageCrontab/avc
+        state: present
+      register: compose_result
 
-    - name: show ls result
+    - name: Show Running Status
       debug:
-        var: ls_output.stdout_lines
+        msg: |
+          Service Status：
+          {% for service in compose_result.services %}
+          - {{ service.service }}: {{ service.current_state }}
+          {% endfor %}
