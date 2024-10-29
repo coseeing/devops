@@ -55,7 +55,7 @@ jobs:
       - name: Deploy CloudFormation stack
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: coseeing-ec2-stack
+          name: ${{github.event.inputs.stack_name}}
           template: cloudformation/common-ec2-instance-template.yml
           parameter-overrides: >-
             InstanceType=${{ github.event.inputs.instance_type }},
