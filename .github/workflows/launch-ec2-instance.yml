@@ -56,7 +56,7 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: coseeing-ec2-stack
-          template: cloudformation/common-ec2-instacne-template.yml
+          template: cloudformation/common-ec2-instance-template.yml
           parameter-overrides: >-
             InstanceType=${{ github.event.inputs.instance_type }},
             AmiId=${{ github.event.inputs.ami_id }},
