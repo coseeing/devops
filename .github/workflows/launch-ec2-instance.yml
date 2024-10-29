@@ -55,14 +55,14 @@ jobs:
       - name: Deploy CloudFormation stack
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: coseeing-ec2-stack
-          template: cloudformation/common-ec2-instacne-template.yml
+          name: ${{github.event.inputs.stack_name}}
+          template: cloudformation/common-ec2-instance-template.yml
           parameter-overrides: >-
             InstanceType=${{ github.event.inputs.instance_type }},
             AmiId=${{ github.event.inputs.ami_id }},
             AvailabilityZone=${{ github.event.inputs.availability_zone }},
             KeyName=${{ github.event.inputs.key_name }},
             InstanceName=${{ github.event.inputs.instance_name }},
-            SecurityGroups=${{ github.event.inputs.security_groups }},
+            SecurityGroups="${{ github.event.inputs.security_groups }}",
             DiskSize=${{ github.event.inputs.disk_size }}
           no-fail-on-empty-changeset: "1"
