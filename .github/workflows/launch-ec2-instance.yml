@@ -63,6 +63,6 @@ jobs:
             AvailabilityZone=${{ github.event.inputs.availability_zone }},
             KeyName=${{ github.event.inputs.key_name }},
             InstanceName=${{ github.event.inputs.instance_name }},
-            SecurityGroups=${{ github.event.inputs.security_groups }},
+            SecurityGroups="${{ github.event.inputs.security_groups }}",
             DiskSize=${{ github.event.inputs.disk_size }}
           no-fail-on-empty-changeset: "1"
