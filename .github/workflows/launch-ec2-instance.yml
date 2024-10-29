@@ -1,0 +1,68 @@
+name: Launch EC2 Instance
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: "Stack Name"
+        required: true
+      instance_type:
+        description: "EC2 Instance Type"
+        required: true
+        default: "t2.micro"
+      ami_id:
+        description: "AMI ID"
+        required: true
+        default: "ami-0b20f552f63953f0e"
+      availability_zone:
+        description: "Availability Zone"
+        required: true
+        default: "ap-northeast-1c"
+      key_name:
+        description: "EC2 KeyPair Name"
+        required: true
+        default: "Woody"
+      instance_name:
+        description: "Instance Name"
+        required: true
+        default: "coseeing-instance"
+      security_groups:
+        description: "Security Group IDs (comma-separated)"
+        required: true
+        default: "sg-098baa9d7eaf501a8,sg-0d260cbf1556be14b,sg-09786ad8171652b3b"
+      disk_size:
+        description: "Root Volume Size (GB)"
+        required: true
+        default: "8"
+
+jobs:
+  launch:
+    name: launch ec2 instance
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
+
+      - name: Deploy CloudFormation stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: coseeing-ec2-stack
+          template: cloudformation/common-ec2-instacne-template.yml
+          parameter-overrides: >-
+            InstanceType=${{ github.event.inputs.instance_type }},
+            AmiId=${{ github.event.inputs.ami_id }},
+            AvailabilityZone=${{ github.event.inputs.availability_zone }},
+            KeyName=${{ github.event.inputs.key_name }},
+            InstanceName=${{ github.event.inputs.instance_name }},
+            SecurityGroups=${{ github.event.inputs.security_groups }},
+            DiskSize=${{ github.event.inputs.disk_size }}
+          no-fail-on-empty-changeset: "1"
