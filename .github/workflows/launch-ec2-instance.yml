@@ -21,11 +21,11 @@ on:
       key_name:
         description: "EC2 KeyPair Name"
         required: true
-        default: "Woody"
+        default: "deploy_key"
       additional_key_name:
         description: "Additional KeyPair Name"
         required: true
-        default: "deploy_key"
+        default: "Woody"
       instance_name:
         description: "Instance Name"
         required: true
@@ -70,16 +70,3 @@ jobs:
             SecurityGroups="${{ github.event.inputs.security_groups }}",
             DiskSize=${{ github.event.inputs.disk_size }}
           no-fail-on-empty-changeset: "1"
-
-      - name: Get Public Key of Additional Key Pai
-        run: |
-          aws ec2 describe-key-pairs --key-name "${{ github.event.inputs.additional_key_name }}" --query 'KeyPairs[0].KeyMaterial' --output text > public_key.pem
-
-      - name: Add Public Key to EC2 Instance via SSM
-        run: |
-            INSTANCE_ID=$(aws cloudformation describe-stack-resources --stack-name ${{github.event.inputs.stack_name}} --logical-resource-id EC2Instance --query 'StackResources[0].PhysicalResourceId' --output text)
-            PUBLIC_KEY_CONTENT=$(cat public_key.pem)
-            aws ssm send-command \
-              --instance-ids "$INSTANCE_ID" \
-              --document-name "AWS-RunShellScript" \
-              --parameters commands="echo '$PUBLIC_KEY_CONTENT' >> /home/ec2-user/.ssh/authorized_keys"
