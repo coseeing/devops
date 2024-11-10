@@ -64,3 +64,6 @@ Outputs:
   PublicDNS:
     Description: Public DNS of the EC2 instance
     Value: !GetAtt EC2Instance.PublicDnsName
+  InstancePublicIp:
+    Description: The public IP address of the EC2 instance
+    Value: !GetAtt [EC2Instance, PublicIp]
