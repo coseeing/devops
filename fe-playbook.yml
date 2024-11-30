@@ -90,7 +90,7 @@
           services:
             a11yvillage-web:
               container_name: a11yvillage-web
-              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
+              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-web:latest
               restart: always
               network_mode: "host"
               environment:
