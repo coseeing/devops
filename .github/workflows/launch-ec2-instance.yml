@@ -112,5 +112,4 @@ jobs:
           add: 'inventory'
           author_name: 'GitHub Actions'
           author_email: 'actions@github.com'
-        env:
-          GITHUB_TOKEN: ${{ secrets.ANSON_PAT_SECRET }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
