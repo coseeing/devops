@@ -1,5 +1,5 @@
 - name: Show Docker Compose Running Status
-  hosts: ec2
+  hosts: all
   become: true
   become_user: root
   vars:

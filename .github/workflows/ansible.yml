@@ -8,6 +8,10 @@ on:
         default: "latest"
         required: true
         type: string
+      stack_name:
+        description: "stack name"
+        required: true
+        type: string
 
 jobs:
   deploy:
@@ -46,6 +50,40 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
           aws-region: ap-northeast-1
+
+      - name: Get instance public IP
+        id: get_ip
+        run: |
+          IP=$(aws cloudformation describe-stacks --stack-name ${{ github.event.inputs.stack_name }} --query "Stacks[0].Outputs[?OutputKey=='InstancePublicIp'].OutputValue" --output text)
+          echo "Instance Public IP: $IP"
+          echo "IP=$IP" >> $GITHUB_OUTPUT
+
+      - name: Write inventory file
+        run: |
+          INVENTORY_FILE="inventory"
+          INSTANCE_NAME="${{ github.event.inputs.stack_name }}"
+          INSTANCE_IP="${{ steps.get_ip.outputs.IP }}"
+          ANSIBLE_USER="ubuntu"
+
+          # Check if the inventory file exists
+          if [ -f "$INVENTORY_FILE" ]; then
+            # Check if the group [INSTANCE_NAME] already exists
+            if grep -q "^\[$INSTANCE_NAME\]" "$INVENTORY_FILE"; then
+              echo "Group [$INSTANCE_NAME] already exists in $INVENTORY_FILE."
+            else
+              # Append the group and host information
+              echo -e "\n[$INSTANCE_NAME]\n$INSTANCE_IP ansible_user=$ANSIBLE_USER" >> "$INVENTORY_FILE"
+              echo "Appended new group [$INSTANCE_NAME] with IP $INSTANCE_IP to $INVENTORY_FILE."
+            fi
+          else
+            # Create the inventory file with the group and host information
+            echo "[$INSTANCE_NAME]" > "$INVENTORY_FILE"
+            echo "$INSTANCE_IP ansible_user=$ANSIBLE_USER" >> "$INVENTORY_FILE"
+            echo "Created $INVENTORY_FILE with group [$INSTANCE_NAME] and IP $INSTANCE_IP."
+          fi
+
+          # Display the inventory file content
+          cat "$INVENTORY_FILE"
 
       - name: Run Ansible Playbook
         env:
