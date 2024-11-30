@@ -29,60 +29,73 @@
         - python3-pip
       become: true
 
-    - name: Install docker Python library
-      pip:
-        name: 
-          - docker
-          - boto3
-          - botocore
-        executable: pip3
+    - name: Install Python packages using apt
+      apt:
+        name:
+          - python3-docker
+          - python3-boto3
+          - python3-botocore
+        state: present
+        update_cache: yes
+      become: true
 
-    - name: Get info from AWS secret manager
-      set_fact:
-        secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+        update_cache: yes
+      become: true
 
-    - name: Set fact from secret_json 
-      set_fact:
-        SECRET_KEY: "{{ secret_data.SECRET_KEY }}"
-        MARIADB_USER: "{{ secret_data.username }}"
-        MARIADB_PASSWORD: "{{ secret_data.password }}"
-        MARIADB_HOST: "{{ secret_data.host }}"
-        MARIADB_PORT: "{{ secret_data.port }}"
-        MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: true
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+      become: true
+
+    - name: Install Docker
+      apt:
+        name: docker-ce
+        state: present
+        update_cache: yes
+      become: true
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      become: true
 
     - name: Create .env file
       copy:
         dest: "{{ docker_compose_dir }}/.env"
         content: |
-          SECRET_KEY={{ SECRET_KEY }}
-          MARIADB_USER={{ MARIADB_USER }}
-          MARIADB_PASSWORD={{ MARIADB_PASSWORD }}
-          MARIADB_HOST={{ MARIADB_HOST }}
-          MARIADB_PORT={{ MARIADB_PORT }}
-          MARIADB_DATABASE={{ MARIADB_DATABASE }}
-          ALLOWED_HOSTS=*
+          NEXT_PUBLIC_API_URL=https://a11yvillage.coseeing.org/
+          NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
 
     - name: Copy docker-compose.yml Document
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
         content: |
-          version: "3.7"
-
           services:
-            a11yvillage-server:
-              container_name: a11yvillage-server
+            a11yvillage-web:
+              container_name: a11yvillage-web
               image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
               restart: always
               network_mode: "host"
-              command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
-                - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
-                - MARIADB_USER=a11yvillage
-                - MARIADB_PASSWORD=a11y@w125
-                - MARIADB_HOST=127.0.0.1
-                - MARIADB_PORT=3306
-                - MARIADB_DATABASE=a11yvillage
-                - ALLOWED_HOSTS=*
+                - NEXT_PUBLIC_API_URL=https://a11yvillage.coseeing.org/
+                - NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
@@ -104,7 +117,7 @@
       shell: |
         aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
       register: ecr_login
-      no_log: true
+      no_log: false
 
     - name: Run
       docker_compose_v2:

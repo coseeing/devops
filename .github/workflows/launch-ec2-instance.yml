@@ -22,10 +22,6 @@ on:
         description: "EC2 KeyPair Name"
         required: true
         default: "deploy_key"
-      additional_key_name:
-        description: "Additional KeyPair Name"
-        required: true
-        default: "Woody"
       instance_name:
         description: "Instance Name"
         required: true

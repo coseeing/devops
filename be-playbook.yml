@@ -1,0 +1,154 @@
+- name: Show Docker Compose Running Status
+  hosts: all
+  become: true
+  become_user: root
+  vars:
+    docker_compose_dir: /home/ubuntu
+    secret_name: prod/rdsuser/a11yvillage
+    secret_region: ap-northeast-1
+  collections:
+    - community.docker
+    - community.aws
+  tasks:
+
+    - name: Set ansible_python_interpreter to use the installed Python
+      set_fact:
+        ansible_python_interpreter: /usr/bin/python3
+
+    - name: Update apt repo and cache on all Debian/Ubuntu boxes
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+      become: true
+
+    - name: Upgrade all apt packages
+      apt: upgrade=yes force_apt_get=yes
+      become: true
+
+    - name: Install Python pip
+      apt: name={{ item }} update_cache=true state=present force_apt_get=yes
+      with_items:
+        - python3-pip
+      become: true
+
+    - name: Install Python packages using apt
+      apt:
+        name:
+          - python3-docker
+          - python3-boto3
+          - python3-botocore
+        state: present
+        update_cache: yes
+      become: true
+
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+        update_cache: yes
+      become: true
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: true
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+      become: true
+
+    - name: Install Docker
+      apt:
+        name: docker-ce
+        state: present
+        update_cache: yes
+      become: true
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      become: true
+
+    - name: Get info from AWS secret manager
+      set_fact:
+        secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
+
+    - name: Set fact from secret_json 
+      set_fact:
+        SECRET_KEY: "{{ secret_data.SECRET_KEY }}"
+        MARIADB_USER: "{{ secret_data.username }}"
+        MARIADB_PASSWORD: "{{ secret_data.password }}"
+        MARIADB_HOST: "{{ secret_data.host }}"
+        MARIADB_PORT: "{{ secret_data.port }}"
+        MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
+
+    - name: Create .env file
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        content: |
+          SECRET_KEY={{ SECRET_KEY }}
+          MARIADB_USER={{ MARIADB_USER }}
+          MARIADB_PASSWORD={{ MARIADB_PASSWORD }}
+          MARIADB_HOST={{ MARIADB_HOST }}
+          MARIADB_PORT={{ MARIADB_PORT }}
+          MARIADB_DATABASE={{ MARIADB_DATABASE }}
+          ALLOWED_HOSTS=*
+
+    - name: Copy docker-compose.yml Document
+      copy:
+        dest: "{{ docker_compose_dir }}/docker-compose.yml"
+        content: |
+          services:
+            a11yvillage-server:
+              container_name: a11yvillage-server
+              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
+              restart: always
+              network_mode: "host"
+              command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
+              environment:
+                - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
+                - MARIADB_USER=a11yvillage
+                - MARIADB_PASSWORD=a11y@w125
+                - MARIADB_HOST=127.0.0.1
+                - MARIADB_PORT=3306
+                - MARIADB_DATABASE=a11yvillage
+                - ALLOWED_HOSTS=*
+
+    - name: Update the repository cache and update package "unzip" to latest version using default
+      apt:
+        name: unzip
+        state: latest
+        update_cache: yes
+
+    - name: Install AWS CLI v2
+      shell: |
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+        unzip /tmp/awscliv2.zip -d /tmp
+        sudo /tmp/aws/install
+        rm -f /tmp/awscliv2.zip
+        rm -rf /tmp/aws
+      args:
+        creates: /usr/local/bin/aws
+
+    - name: Login ECR using AWS CLI
+      shell: |
+        aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
+      register: ecr_login
+      no_log: false
+
+    - name: Run
+      docker_compose_v2:
+        project_src: "{{ docker_compose_dir }}"
+        state: present
+      register: compose_result
+
+    - name: Show compose_result Detail info
+      debug:
+        var: compose_result
