@@ -39,6 +39,10 @@ on:
         required: true
         default: "8"
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   launch:
     name: launch ec2 instance
