@@ -6,6 +6,11 @@
     docker_compose_dir: /home/ubuntu
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
+    webroot_path: '/var/www/html'  # the root path of your site
+    certbot_source_directory: /usr/local/certbot-src
+    certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
+    domain: a11yvillage.coseeing.org
+    email: tsengwoody@coseeing.org
   collections:
     - community.docker
     - community.aws
@@ -35,6 +40,14 @@
           - python3-docker
           - python3-boto3
           - python3-botocore
+          - python3-venv
+          - gcc
+          - libaugeas0
+          - libssl-dev
+          - libffi-dev
+          - ca-certificates
+          - openssl
+          - git
         state: present
         update_cache: yes
       become: true
@@ -75,6 +88,38 @@
         state: started
         enabled: yes
       become: true
+
+    - name: ensure nginx is at the latest version
+      apt: name=nginx state=latest
+      become: true
+
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+      become: true
+
+    - name: Clone the certbot source directory
+      ansible.builtin.git:
+        depth: 1
+        repo: https://github.com/certbot/certbot
+        dest: "{{ certbot_source_directory }}"
+        update: true
+
+    - name: Create certbot in virtual environment
+      ansible.builtin.command: python3 tools/venv.py
+      args:
+        chdir: "{{ certbot_source_directory }}"
+
+    - name: Generate the SSL certificate
+      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
+
+    - name: Set up automatic renewal
+      ansible.builtin.cron:
+        name: "Certbot automatic renewal"
+        job: "{{ certbot_executable_path }} renew --quiet"
+        minute: "11"
+        hour: "11"
 
     - name: Get info from AWS secret manager
       set_fact:
