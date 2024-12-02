@@ -121,6 +121,46 @@
         minute: "11"
         hour: "11"
 
+    - name: Create Nginx configuration for api subdomain
+      copy:
+        dest: /etc/nginx/sites-available/api.a11yvillage.coseeing.org
+        content: |
+          server {
+              listen 80;
+              server_name api.a11yvillage.coseeing.org;
+              
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+
+          server {
+              listen 443 ssl;
+              server_name api.a11yvillage.coseeing.org;
+
+              ssl_certificate /etc/letsencrypt/live/api.a11yvillage.coseeing.org/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/api.a11yvillage.coseeing.org/privkey.pem;
+
+              location / {
+                  proxy_pass http://localhost:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Create symbolic links for Nginx sites
+      file:
+        src: "/etc/nginx/sites-available/{{ domain }}"
+        dest: "/etc/nginx/sites-enabled/{{ domain }}"
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
     - name: Get info from AWS secret manager
       set_fact:
         secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
@@ -156,7 +196,7 @@
               image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
               restart: always
               ports:
-                - "443:8000"
+                - "8000:8000"
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
                 - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
