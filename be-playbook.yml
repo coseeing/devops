@@ -93,12 +93,6 @@
       apt: name=nginx state=latest
       become: true
 
-    - name: restart nginx
-      service:
-        name: nginx
-        state: restarted
-      become: true
-
     - name: Clone the certbot source directory
       ansible.builtin.git:
         depth: 1
@@ -123,11 +117,11 @@
 
     - name: Create Nginx configuration for api subdomain
       copy:
-        dest: /etc/nginx/sites-available/api.a11yvillage.coseeing.org
+        dest: /etc/nginx/sites-available/{{ domain }}
         content: |
           server {
               listen 80;
-              server_name api.a11yvillage.coseeing.org;
+              server_name {{ domain }};
               
               location / {
                   return 301 https://$host$request_uri;
@@ -136,10 +130,10 @@
 
           server {
               listen 443 ssl;
-              server_name api.a11yvillage.coseeing.org;
+              server_name {{ domain }};
 
-              ssl_certificate /etc/letsencrypt/live/api.a11yvillage.coseeing.org/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/api.a11yvillage.coseeing.org/privkey.pem;
+              ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
 
               location / {
                   proxy_pass http://localhost:8000;
@@ -199,13 +193,13 @@
                 - "8000:8000"
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
-                SECRET_KEY: ${SECRET_KEY}
-                MARIADB_USER: ${MARIADB_USER}
-                MARIADB_PASSWORD: ${MARIADB_PASSWORD}
-                MARIADB_HOST: ${MARIADB_HOST}
-                MARIADB_PORT: ${MARIADB_PORT}
-                MARIADB_DATABASE: ${MARIADB_DATABASE}
-                ALLOWED_HOSTS: *
+                - SECRET_KEY=${SECRET_KEY}
+                - MARIADB_USER=${MARIADB_USER}
+                - MARIADB_PASSWORD=${MARIADB_PASSWORD}
+                - MARIADB_HOST=${MARIADB_HOST}
+                - MARIADB_PORT=${MARIADB_PORT}
+                - MARIADB_DATABASE=${MARIADB_DATABASE}
+                - ALLOWED_HOSTS=${ALLOWED_HOSTS}
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
@@ -238,3 +232,9 @@
     - name: Show compose_result Detail info
       debug:
         var: compose_result
+
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+      become: true

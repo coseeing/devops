@@ -6,6 +6,12 @@
     docker_compose_dir: /home/ubuntu
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
+    webroot_path: '/var/www/html'  # the root path of your site
+    certbot_source_directory: /usr/local/certbot-src
+    certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
+    domain: a11yvillage.coseeing.org
+    tmp_domain: tmp.a11yvillage.coseeing.org
+    email: tsengwoody@coseeing.org
   collections:
     - community.docker
     - community.aws
@@ -35,6 +41,14 @@
           - python3-docker
           - python3-boto3
           - python3-botocore
+          - python3-venv
+          - gcc
+          - libaugeas0
+          - libssl-dev
+          - libffi-dev
+          - ca-certificates
+          - openssl
+          - git
         state: present
         update_cache: yes
       become: true
@@ -76,6 +90,104 @@
         enabled: yes
       become: true
 
+    - name: ensure nginx is at the latest version
+      apt: name=nginx state=latest
+      become: true
+
+    - name: Clone the certbot source directory
+      ansible.builtin.git:
+        depth: 1
+        repo: https://github.com/certbot/certbot
+        dest: "{{ certbot_source_directory }}"
+        update: true
+
+    - name: Create certbot in virtual environment
+      ansible.builtin.command: python3 tools/venv.py
+      args:
+        chdir: "{{ certbot_source_directory }}"
+
+    - name: Generate the SSL certificate
+      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} -d {{ tmp_domain }} --non-interactive --agree-tos --email {{ email }}"
+
+    - name: Set up automatic renewal
+      ansible.builtin.cron:
+        name: "Certbot automatic renewal"
+        job: "{{ certbot_executable_path }} renew --quiet"
+        minute: "11"
+        hour: "11"
+
+    - name: Create Nginx configuration for tmp subdomain
+      copy:
+        dest: /etc/nginx/sites-available/{{ tmp_domain }}
+        content: |
+          server {
+              listen 80;
+              server_name {{ tmp_domain }};
+              
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ tmp_domain }};
+
+              ssl_certificate /etc/letsencrypt/live/{{ tmp_domain }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ tmp_domain }}/privkey.pem;
+
+              location / {
+                  proxy_pass http://localhost:3000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Create Nginx configuration for domain
+      copy:
+        dest: /etc/nginx/sites-available/{{ domain }}
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }};
+              
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ domain }};
+
+              ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
+
+              location / {
+                  proxy_pass http://localhost:3000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Create symbolic links for Nginx sites
+      file:
+        src: "/etc/nginx/sites-available/{{ item }}"
+        dest: "/etc/nginx/sites-enabled/{{ item }}"
+        state: link
+      with_items:
+        - {{ domain }}
+        - {{ tmp_domain }}
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
     - name: Create .env file
       copy:
         dest: "{{ docker_compose_dir }}/.env"
@@ -93,7 +205,7 @@
               image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-web:latest
               restart: always
               ports:
-                - "80:3000"
+                - "3000:3000"
               environment:
                 - NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
                 - NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
@@ -129,3 +241,9 @@
     - name: Show compose_result Detail info
       debug:
         var: compose_result
+
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+      become: true
