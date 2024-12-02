@@ -9,8 +9,7 @@
     webroot_path: '/var/www/html'  # the root path of your site
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
-    domain: a11yvillage.coseeing.org
-    tmp_domain: tmp.a11yvillage.coseeing.org
+    domain: tmp.a11yvillage.coseeing.org
     email: tsengwoody@coseeing.org
   collections:
     - community.docker
@@ -116,35 +115,6 @@
         minute: "11"
         hour: "11"
 
-    - name: Create Nginx configuration for tmp subdomain
-      copy:
-        dest: /etc/nginx/sites-available/{{ tmp_domain }}
-        content: |
-          server {
-              listen 80;
-              server_name {{ tmp_domain }};
-              
-              location / {
-                  return 301 https://$host$request_uri;
-              }
-          }
-
-          server {
-              listen 443 ssl;
-              server_name {{ tmp_domain }};
-
-              ssl_certificate /etc/letsencrypt/live/{{ tmp_domain }}/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/{{ tmp_domain }}/privkey.pem;
-
-              location / {
-                  proxy_pass http://localhost:3000;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-              }
-          }
-
     - name: Create Nginx configuration for domain
       copy:
         dest: /etc/nginx/sites-available/{{ domain }}
@@ -176,12 +146,9 @@
 
     - name: Create symbolic links for Nginx sites
       file:
-        src: "/etc/nginx/sites-available/{{ item }}"
-        dest: "/etc/nginx/sites-enabled/{{ item }}"
+        src: "/etc/nginx/sites-available/{{ domain }}"
+        dest: "/etc/nginx/sites-enabled/{{ domain }}"
         state: link
-      with_items:
-        - "{{ domain }}"
-        - "{{ tmp_domain }}"
 
     - name: Remove default Nginx site
       file:
