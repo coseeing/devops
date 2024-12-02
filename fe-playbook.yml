@@ -106,7 +106,7 @@
         chdir: "{{ certbot_source_directory }}"
 
     - name: Generate the SSL certificate
-      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} -d {{ tmp_domain }} --non-interactive --agree-tos --email {{ email }}"
+      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
 
     - name: Set up automatic renewal
       ansible.builtin.cron:
