@@ -9,7 +9,7 @@
     webroot_path: '/var/www/html'  # the root path of your site
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
-    domain: a11yvillage.coseeing.org
+    domain: api.a11yvillage.coseeing.org
     email: tsengwoody@coseeing.org
   collections:
     - community.docker
@@ -156,7 +156,7 @@
               image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
               restart: always
               ports:
-                - "80:8000"
+                - "443:8000"
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
                 - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
