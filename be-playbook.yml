@@ -111,7 +111,7 @@
               image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
               restart: always
               ports:
-                - "8000:8000"
+                - "443:8000"
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
                 - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
