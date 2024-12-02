@@ -180,8 +180,8 @@
         dest: "/etc/nginx/sites-enabled/{{ item }}"
         state: link
       with_items:
-        - {{ domain }}
-        - {{ tmp_domain }}
+        - "{{ domain }}"
+        - "{{ tmp_domain }}"
 
     - name: Remove default Nginx site
       file:
