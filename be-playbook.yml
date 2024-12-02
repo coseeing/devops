@@ -199,13 +199,13 @@
                 - "8000:8000"
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
-                - SECRET_KEY=django-insecure-2c_0l+#a&dx&v(35s!dr42l)a08&-z6og#-uw-9bv_zawrz6zo
-                - MARIADB_USER=a11yvillage
-                - MARIADB_PASSWORD=a11y@w125
-                - MARIADB_HOST=127.0.0.1
-                - MARIADB_PORT=3306
-                - MARIADB_DATABASE=a11yvillage
-                - ALLOWED_HOSTS=*
+                SECRET_KEY: ${SECRET_KEY}
+                MARIADB_USER: ${MARIADB_USER}
+                MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+                MARIADB_HOST: ${MARIADB_HOST}
+                MARIADB_PORT: ${MARIADB_PORT}
+                MARIADB_DATABASE: ${MARIADB_DATABASE}
+                ALLOWED_HOSTS: *
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
