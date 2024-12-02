@@ -188,13 +188,6 @@
         path: /etc/nginx/sites-enabled/default
         state: absent
 
-    - name: Create .env file
-      copy:
-        dest: "{{ docker_compose_dir }}/.env"
-        content: |
-          NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
-          NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
-
     - name: Copy docker-compose.yml Document
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
