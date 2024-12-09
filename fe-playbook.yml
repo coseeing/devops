@@ -105,16 +105,6 @@
       args:
         chdir: "{{ certbot_source_directory }}"
 
-    - name: Generate the SSL certificate
-      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
-
-    - name: Set up automatic renewal
-      ansible.builtin.cron:
-        name: "Certbot automatic renewal"
-        job: "{{ certbot_executable_path }} renew --quiet"
-        minute: "11"
-        hour: "11"
-
     - name: Create Nginx configuration for domain
       copy:
         dest: /etc/nginx/sites-available/{{ domain }}
@@ -154,6 +144,16 @@
       file:
         path: /etc/nginx/sites-enabled/default
         state: absent
+
+    - name: Generate the SSL certificate
+      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
+
+    - name: Set up automatic renewal
+      ansible.builtin.cron:
+        name: "Certbot automatic renewal"
+        job: "{{ certbot_executable_path }} renew --quiet"
+        minute: "11"
+        hour: "11"
 
     - name: Copy docker-compose.yml Document
       copy:
