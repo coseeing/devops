@@ -3,13 +3,14 @@
   become: true
   become_user: root
   vars:
-    docker_compose_dir: /home/ubuntu
+    deploy_tag: ${{ github.event.inputs.deployTag }}
+    docker_compose_dir: /home/ubuntu/a11yvillage-server
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
     webroot_path: '/var/www/html'  # the root path of your site
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
-    domain: a11yvillage.coseeing.org
+    domain: api.a11yvillage.coseeing.org
     email: tsengwoody@coseeing.org
   collections:
     - community.docker
@@ -105,7 +106,17 @@
       args:
         chdir: "{{ certbot_source_directory }}"
 
-    - name: Create Nginx configuration for domain
+    - name: Generate the SSL certificate
+      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
+
+    - name: Set up automatic renewal
+      ansible.builtin.cron:
+        name: "Certbot automatic renewal"
+        job: "{{ certbot_executable_path }} renew --quiet"
+        minute: "11"
+        hour: "11"
+
+    - name: Create Nginx configuration for api subdomain
       copy:
         dest: /etc/nginx/sites-available/{{ domain }}
         content: |
@@ -126,7 +137,7 @@
               ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
 
               location / {
-                  proxy_pass http://localhost:3000;
+                  proxy_pass http://localhost:8000;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -145,30 +156,58 @@
         path: /etc/nginx/sites-enabled/default
         state: absent
 
-    - name: Generate the SSL certificate
-      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
+    - name: Get info from AWS secret manager
+      set_fact:
+        secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
 
-    - name: Set up automatic renewal
-      ansible.builtin.cron:
-        name: "Certbot automatic renewal"
-        job: "{{ certbot_executable_path }} renew --quiet"
-        minute: "11"
-        hour: "11"
+    - name: Set fact from secret_json 
+      set_fact:
+        SECRET_KEY: "{{ secret_data.SECRET_KEY }}"
+        MARIADB_USER: "{{ secret_data.username }}"
+        MARIADB_PASSWORD: "{{ secret_data.password }}"
+        MARIADB_HOST: "{{ secret_data.host }}"
+        MARIADB_PORT: "{{ secret_data.port }}"
+        MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
+
+    - name: Create .env file
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        content: |
+          SECRET_KEY={{ SECRET_KEY }}
+          MARIADB_USER={{ MARIADB_USER }}
+          MARIADB_PASSWORD={{ MARIADB_PASSWORD }}
+          MARIADB_HOST={{ MARIADB_HOST }}
+          MARIADB_PORT={{ MARIADB_PORT }}
+          MARIADB_DATABASE={{ MARIADB_DATABASE }}
+          ALLOWED_HOSTS=*
+
+    - name: Ensure docker compose directory exists
+      file:
+        path: "{{ docker_compose_dir }}"
+        state: directory
+        mode: '0755'
+      become: true
 
     - name: Copy docker-compose.yml Document
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
         content: |
           services:
-            a11yvillage-web:
-              container_name: a11yvillage-web
-              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-web:latest
+            a11yvillage-server:
+              container_name: a11yvillage-server
+              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:{{ deploy_tag }}
               restart: always
               ports:
-                - "3000:3000"
+                - "8000:8000"
+              command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
-                - NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
-                - NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
+                - SECRET_KEY=${SECRET_KEY}
+                - MARIADB_USER=${MARIADB_USER}
+                - MARIADB_PASSWORD=${MARIADB_PASSWORD}
+                - MARIADB_HOST=${MARIADB_HOST}
+                - MARIADB_PORT=${MARIADB_PORT}
+                - MARIADB_DATABASE=${MARIADB_DATABASE}
+                - ALLOWED_HOSTS=${ALLOWED_HOSTS}
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
@@ -191,6 +230,17 @@
         aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
       register: ecr_login
       no_log: false
+
+    - name: Check if image exists
+      docker_image_info:
+        name: "622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:{{ deploy_tag }}"
+      register: image_info
+
+    - name: Untag existing image if it exists
+      docker_image:
+        name: "622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:{{ deploy_tag }}"
+        state: absent
+      when: image_info.images | length > 0
 
     - name: Run
       docker_compose_v2:
