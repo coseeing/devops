@@ -242,7 +242,7 @@
       docker_image:
         name: "{{ image_name }}"
         state: absent
-        force: true
+        force_absent: true
       when: image_info.images | length > 0
 
     - name: Run
