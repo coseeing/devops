@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       deploy_type:
-        description: "deployment type (BE or FE)"
+        description: "deployment type"
         required: true
         type: choice
         options:
