@@ -169,6 +169,13 @@
         MARIADB_PORT: "{{ secret_data.port }}"
         MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
 
+    - name: Ensure docker compose directory exists
+      file:
+        path: "{{ docker_compose_dir }}"
+        state: directory
+        mode: '0755'
+      become: true
+
     - name: Create .env file
       copy:
         dest: "{{ docker_compose_dir }}/.env"
@@ -180,13 +187,6 @@
           MARIADB_PORT={{ MARIADB_PORT }}
           MARIADB_DATABASE={{ MARIADB_DATABASE }}
           ALLOWED_HOSTS=*
-
-    - name: Ensure docker compose directory exists
-      file:
-        path: "{{ docker_compose_dir }}"
-        state: directory
-        mode: '0755'
-      become: true
 
     - name: Copy docker-compose.yml Document
       copy:
