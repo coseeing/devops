@@ -243,6 +243,10 @@
         minute: "11"
         hour: "11"
 
+    - name: Kill all nginx processes using pkill
+      ansible.builtin.command: "pkill -9 nginx"
+      ignore_errors: true
+
     - name: restart nginx
       service:
         name: nginx
