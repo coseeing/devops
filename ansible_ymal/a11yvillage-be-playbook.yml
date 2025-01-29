@@ -108,16 +108,6 @@
       args:
         chdir: "{{ certbot_source_directory }}"
 
-    - name: Generate the SSL certificate
-      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
-
-    - name: Set up automatic renewal
-      ansible.builtin.cron:
-        name: "Certbot automatic renewal"
-        job: "{{ certbot_executable_path }} renew --quiet"
-        minute: "11"
-        hour: "11"
-
     - name: Create Nginx configuration for api subdomain
       copy:
         dest: /etc/nginx/sites-available/{{ domain }}
@@ -126,18 +116,6 @@
               listen 80;
               server_name {{ domain }};
               
-              location / {
-                  return 301 https://$host$request_uri;
-              }
-          }
-
-          server {
-              listen 443 ssl;
-              server_name {{ domain }};
-
-              ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
-
               location / {
                   proxy_pass http://localhost:8000;
                   proxy_set_header Host $host;
@@ -254,6 +232,16 @@
     - name: Show compose_result Detail info
       debug:
         var: compose_result
+
+    - name: Generate the SSL certificate
+      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
+
+    - name: Set up automatic renewal
+      ansible.builtin.cron:
+        name: "Certbot automatic renewal"
+        job: "{{ certbot_executable_path }} renew --quiet"
+        minute: "11"
+        hour: "11"
 
     - name: restart nginx
       service:

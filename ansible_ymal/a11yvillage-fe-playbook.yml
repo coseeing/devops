@@ -117,15 +117,6 @@
               server_name {{ domain }};
               
               location / {
-                  return 301 https://$host$request_uri;
-              }
-          }
-
-          server {
-              listen 443 ssl;
-              server_name {{ domain }};
-
-              location / {
                   proxy_pass http://localhost:3000;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
@@ -211,12 +202,6 @@
       debug:
         var: compose_result
 
-    - name: restart nginx
-      service:
-        name: nginx
-        state: restarted
-      become: true
-
     - name: Generate the SSL certificate
       ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
 
@@ -226,3 +211,9 @@
         job: "{{ certbot_executable_path }} renew --quiet"
         minute: "11"
         hour: "11"
+
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+      become: true
