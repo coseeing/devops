@@ -3,7 +3,8 @@
   become: true
   become_user: root
   vars:
-    docker_compose_dir: /home/ubuntu
+    deploy_tag: ${{ github.event.inputs.deployTag }}
+    docker_compose_dir: /home/ubuntu/a11yvillage-server
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
     webroot_path: '/var/www/html'  # the root path of your site
@@ -11,6 +12,8 @@
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
     domain: api.a11yvillage.coseeing.org
     email: tsengwoody@coseeing.org
+    ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
+    image_name: "{{ ecr_location }}/a11yvillage-be:{{ deploy_tag }}"
   collections:
     - community.docker
     - community.aws
@@ -168,6 +171,13 @@
         MARIADB_PORT: "{{ secret_data.port }}"
         MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
 
+    - name: Ensure docker compose directory exists
+      file:
+        path: "{{ docker_compose_dir }}"
+        state: directory
+        mode: '0755'
+      become: true
+
     - name: Create .env file
       copy:
         dest: "{{ docker_compose_dir }}/.env"
@@ -187,7 +197,7 @@
           services:
             a11yvillage-server:
               container_name: a11yvillage-server
-              image: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/a11yvillage-server:latest
+              image: {{ image_name }}
               restart: always
               ports:
                 - "8000:8000"
@@ -219,9 +229,21 @@
 
     - name: Login ECR using AWS CLI
       shell: |
-        aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
+        aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin {{ ecr_location }}
       register: ecr_login
       no_log: false
+
+    - name: Check if image exists
+      docker_image_info:
+        name: "{{ image_name }}"
+      register: image_info
+
+    - name: Untag existing image if it exists
+      docker_image:
+        name: "{{ image_name }}"
+        state: absent
+        force_absent: true
+      when: image_info.images | length > 0
 
     - name: Run
       docker_compose_v2:

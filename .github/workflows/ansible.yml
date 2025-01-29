@@ -13,12 +13,12 @@ on:
         required: true
         type: string
       deploy_type:
-        description: "deployment type (BE or FE)"
+        description: "deployment type"
         required: true
         type: choice
         options:
-          - BE
-          - FE
+          - a11yvillage-be
+          - a11yvillage-fe
 
 jobs:
   deploy:
@@ -97,4 +97,6 @@ jobs:
           ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
           source venv/bin/activate
-          ansible-playbook -i inventory ${{ github.event.inputs.deploy_type == 'BE' && 'be-playbook.yml' || 'fe-playbook.yml' }}
+          ansible-playbook -i inventory \
+            -e "deploy_tag=${{ github.event.inputs.deployTag }}" \
+            ansible_ymal/${{ github.event.inputs.deploy_type }}-playbook.yml
