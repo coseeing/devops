@@ -13,7 +13,7 @@
     domain: api.a11yvillage.coseeing.org
     email: tsengwoody@coseeing.org
     ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
-    image_name: "{{ ecr_location }}/a11yvillage-server:{{ deploy_tag }}"
+    image_name: "{{ ecr_location }}/a11yvillage-be:{{ deploy_tag }}"
   collections:
     - community.docker
     - community.aws
