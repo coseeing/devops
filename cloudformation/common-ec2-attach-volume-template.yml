@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for attaching EBS volume by name (create if not exists)
+
+Parameters:
+  TargetInstanceId:
+    Type: String
+    Description: EC2 instance ID to attach the volume to (can be from another stack)
+  
+  VolumeName:
+    Type: String
+    Description: Name of the EBS volume to attach (will be created if not exists)
+    
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Must be the same AZ as the target EC2 instance
+    
+  VolumeSize:
+    Type: Number
+    Description: Size of the EBS volume in GB (only used if creating new volume)
+    Default: 20
+    
+  VolumeDevice:
+    Type: String
+    Description: Device name for the volume
+    Default: /dev/sdf
+
+Resources:
+  VolumeSearchFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      ec2 = boto3.client('ec2')
+                      volume_name = event['ResourceProperties']['VolumeName']
+                      az = event['ResourceProperties']['AvailabilityZone']
+
+                      response = ec2.describe_volumes(
+                          Filters=[
+                              {'Name': 'tag:Name', 'Values': [volume_name]},
+                              {'Name': 'availability-zone', 'Values': [az]}
+                          ]
+                      )
+
+                      if response['Volumes']:
+                          volume_id = response['Volumes'][0]['VolumeId']
+                          print(f"Found volume {volume_id} during deletion")
+
+                          waiter = ec2.get_waiter('volume_available')
+                          waiter.wait(VolumeIds=[volume_id])
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                      
+                  if event['RequestType'] in ['Create', 'Update']:
+                      ec2 = boto3.client('ec2')
+                      volume_name = event['ResourceProperties']['VolumeName']
+                      az = event['ResourceProperties']['AvailabilityZone']
+                      volume_size = event['ResourceProperties']['VolumeSize']
+
+                      response = ec2.describe_volumes(
+                          Filters=[
+                              {'Name': 'tag:Name', 'Values': [volume_name]},
+                              {'Name': 'availability-zone', 'Values': [az]},
+                              {'Name': 'status', 'Values': ['available']}
+                          ]
+                      )
+                      
+                      if response['Volumes']:
+                          volume_id = response['Volumes'][0]['VolumeId']
+                      else:
+                          # Create new volume if none exists
+                          new_volume = ec2.create_volume(
+                              AvailabilityZone=az,
+                              Size=int(volume_size),
+                              VolumeType='gp3',
+                              TagSpecifications=[{
+                                  'ResourceType': 'volume',
+                                  'Tags': [{'Key': 'Name', 'Value': volume_name}]
+                              }]
+                          )
+                          volume_id = new_volume['VolumeId']
+                          
+                          # Wait for volume to be available
+                          waiter = ec2.get_waiter('volume_available')
+                          waiter.wait(VolumeIds=[volume_id])
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                          {'VolumeId': volume_id})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                      {'Error': str(e)})
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: VolumeManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVolumes
+                  - ec2:CreateVolume
+                  - ec2:CreateTags
+                Resource: '*'
+
+  VolumeSearch:
+    Type: Custom::VolumeSearch
+    Properties:
+      ServiceToken: !GetAtt VolumeSearchFunction.Arn
+      VolumeName: !Ref VolumeName
+      AvailabilityZone: !Ref AvailabilityZone
+      VolumeSize: !Ref VolumeSize
+
+  VolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: !Ref VolumeDevice
+      InstanceId: !Ref TargetInstanceId
+      VolumeId: !GetAtt VolumeSearch.VolumeId
+
+Outputs:
+  VolumeId:
+    Description: ID of the EBS volume
+    Value: !GetAtt VolumeSearch.VolumeId
