@@ -24,13 +24,26 @@ on:
       source_stack_name:
         description: "Source Stack Name (to get EC2 instance ID)"
         required: true
+      mount_path:
+        description: "Mount Path"
+        required: true
+        default: "/data"
+      setup_samba:
+        description: "Setup Samba Server"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  attach:
+  deployment:
+    environment: a11y-village-production
     name: attach ebs volume
     runs-on: ubuntu-latest
     permissions:
@@ -71,3 +84,124 @@ jobs:
             VolumeDevice=${{ github.event.inputs.volume_device }},
             TargetInstanceId=${{ steps.get-instance.outputs.instance_id }}
           no-fail-on-empty-changeset: "1"
+
+      - name: Setup Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Generate Ansible inventory
+        run: |
+          INSTANCE_IP=$(aws ec2 describe-instances \
+            --instance-ids ${{ steps.get-instance.outputs.instance_id }} \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          echo "instance_ip=${INSTANCE_IP}" >> $GITHUB_OUTPUT
+          echo "[servers]" > inventory.ini
+          echo "${INSTANCE_IP} ansible_user=ec2-user ansible_ssh_private_key_file=private_key.pem" >> inventory.ini
+
+      - name: Set SSH Key
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Generate Ansible playbook
+        run: |
+          cat > mount_volume.yml << 'EOL'
+          ---
+          - name: Configure mount point and optional Samba
+            hosts: all
+            become: yes
+            vars:
+              mount_path: "${{ github.event.inputs.mount_path }}"
+              device_name: "${{ github.event.inputs.volume_device }}"
+              setup_samba: ${{ github.event.inputs.setup_samba }}
+              samba_user: "${{ secrets.SAMBA_USER }}"
+              samba_password: "${{ secrets.SAMBA_PASSWORD }}"
+
+            tasks:
+              - name: Create filesystem if not exists
+                filesystem:
+                  fstype: ext4
+                  dev: "{{ device_name }}"
+                when: ansible_facts.mounts | selectattr('device', 'equalto', device_name) | list | length == 0
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}"
+                  state: directory
+                  mode: '0755'
+
+              - name: Mount volume
+                mount:
+                  path: "{{ mount_path }}"
+                  src: "{{ device_name }}"
+                  fstype: ext4
+                  state: mounted
+
+              - name: Install Samba packages
+                package:
+                  name: 
+                    - samba
+                    - samba-common
+                  state: present
+                when: setup_samba | bool
+
+              - name: Create samba user
+                user:
+                  name: "{{ samba_user }}"
+                  state: present
+                  system: yes
+                when: setup_samba | bool
+
+              - name: Set samba user password
+                shell: "(echo '{{ samba_password }}'; echo '{{ samba_password }}') | smbpasswd -s -a {{ samba_user }}"
+                when: setup_samba | bool
+
+              - name: Configure Samba
+                template:
+                  src: smb.conf.j2
+                  dest: /etc/samba/smb.conf
+                when: setup_samba | bool
+                notify: restart samba
+
+              - name: Ensure Samba is running
+                service:
+                  name: smbd
+                  state: started
+                  enabled: yes
+                when: setup_samba | bool
+
+            handlers:
+              - name: restart samba
+                service:
+                  name: smbd
+                  state: restarted
+                when: setup_samba | bool
+          EOL
+
+      - name: Create Samba config template
+        run: |
+          mkdir -p templates
+          cat > templates/smb.conf.j2 << 'EOL'
+          [global]
+             workgroup = WORKGROUP
+             security = user
+             map to guest = never
+             log file = /var/log/samba/%m.log
+             max log size = 50
+             server role = standalone server
+
+          [data]
+             path = {{ mount_path }}
+             valid users = {{ samba_user }}
+             browseable = yes
+             writable = yes
+             create mask = 0644
+             directory mask = 0755
+          EOL
+
+      - name: Run Ansible playbook
+        run: |
+          export ANSIBLE_HOST_KEY_CHECKING=False
+          ansible-playbook -i inventory.ini mount_volume.yml
