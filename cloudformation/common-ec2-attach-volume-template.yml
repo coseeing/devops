@@ -38,6 +38,10 @@ Resources:
           
           def handler(event, context):
               try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                      
                   if event['RequestType'] in ['Create', 'Update']:
                       ec2 = boto3.client('ec2')
                       volume_name = event['ResourceProperties']['VolumeName']
@@ -73,11 +77,10 @@ Resources:
                       
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, 
                           {'VolumeId': volume_id})
-                  else:
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
               except Exception as e:
-                  print(e)
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                      {'Error': str(e)})
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
