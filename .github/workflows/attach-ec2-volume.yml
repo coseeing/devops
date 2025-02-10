@@ -1,0 +1,73 @@
+name: Attach EBS Volume to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: "Stack Name"
+        required: true
+      volume_name:
+        description: "Volume Name"
+        required: true
+      availability_zone:
+        description: "Availability Zone"
+        required: true
+        default: "ap-northeast-1c"
+      volume_size:
+        description: "Volume Size (GB)"
+        required: true
+        default: "20"
+      volume_device:
+        description: "Volume Device Name"
+        required: true
+        default: "/dev/sdf"
+      source_stack_name:
+        description: "Source Stack Name (to get EC2 instance ID)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  attach:
+    name: attach ebs volume
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
+
+      - name: Get EC2 Instance ID from source stack
+        id: get-instance
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stack-resources \
+            --stack-name ${{ github.event.inputs.source_stack_name }} \
+            --query "StackResources[?ResourceType=='AWS::EC2::Instance'].PhysicalResourceId" \
+            --output text)
+          echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "No EC2 instance found in stack ${{ github.event.inputs.source_stack_name }}"
+            exit 1
+          fi
+
+      - name: Deploy CloudFormation stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ github.event.inputs.stack_name }}
+          template: cloudformation/common-ec2-attach-volume-template.yml
+          parameter-overrides: >-
+            VolumeName=${{ github.event.inputs.volume_name }},
+            AvailabilityZone=${{ github.event.inputs.availability_zone }},
+            VolumeSize=${{ github.event.inputs.volume_size }},
+            VolumeDevice=${{ github.event.inputs.volume_device }},
+            TargetInstanceId=${{ steps.get-instance.outputs.instance_id }}
+          no-fail-on-empty-changeset: "1"
