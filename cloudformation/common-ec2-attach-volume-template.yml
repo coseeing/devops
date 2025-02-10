@@ -104,11 +104,6 @@ Resources:
         - Key: Name
           Value: !Ref VolumeName
 
-Conditions:
-  CreateNewVolume: !Equals 
-    - !GetAtt VolumeSearch.VolumeExists
-    - 'false'
-
   VolumeAttachment:
     Type: AWS::EC2::VolumeAttachment
     Properties:
@@ -118,6 +113,11 @@ Conditions:
         - CreateNewVolume
         - !Ref NewVolume
         - !GetAtt VolumeSearch.VolumeId
+
+Conditions:
+  CreateNewVolume: !Equals 
+    - !GetAtt VolumeSearch.VolumeExists
+    - 'false'
 
 Outputs:
   VolumeId:
