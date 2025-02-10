@@ -53,9 +53,18 @@ Resources:
                       if response['Volumes']:
                           volume_id = response['Volumes'][0]['VolumeId']
                           print(f"Found volume {volume_id} during deletion")
-
-                          waiter = ec2.get_waiter('volume_available')
-                          waiter.wait(VolumeIds=[volume_id])
+                        
+                          if response['Volumes'][0]['Attachments']:
+                              print(f"Volume {volume_id} is still attached, skipping wait")
+                              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                              return
+                          
+                          try:
+                              waiter = ec2.get_waiter('volume_available')
+                              waiter.config.max_attempts = 10  # 約等於 50 秒
+                              waiter.wait(VolumeIds=[volume_id])
+                          except Exception as we:
+                              print(f"Waiter error: {str(we)}, proceeding with deletion anyway")
                       
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
                       return
@@ -122,6 +131,8 @@ Resources:
                   - ec2:DescribeVolumes
                   - ec2:CreateVolume
                   - ec2:CreateTags
+                  - ec2:DescribeVolumeAttribute
+                  - ec2:DescribeVolumeStatus
                 Resource: '*'
 
   VolumeSearch:
