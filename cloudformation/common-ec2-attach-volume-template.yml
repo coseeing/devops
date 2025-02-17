@@ -55,16 +55,19 @@ Resources:
                           print(f"Found volume {volume_id} during deletion")
                         
                           if response['Volumes'][0]['Attachments']:
-                              print(f"Volume {volume_id} is still attached, skipping wait")
-                              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-                              return
-                          
-                          try:
-                              waiter = ec2.get_waiter('volume_available')
-                              waiter.config.max_attempts = 10  # 約等於 50 秒
-                              waiter.wait(VolumeIds=[volume_id])
-                          except Exception as we:
-                              print(f"Waiter error: {str(we)}, proceeding with deletion anyway")
+                              attachment = response['Volumes'][0]['Attachments'][0]
+                              print(f"Volume {volume_id} is attached to {attachment['InstanceId']}, detaching...")
+                              
+                              try:
+                                  ec2.detach_volume(VolumeId=volume_id)
+                                  waiter = ec2.get_waiter('volume_available')
+                                  waiter.wait(VolumeIds=[volume_id])
+                                  print(f"Volume {volume_id} successfully detached")
+                              except Exception as de:
+                                  print(f"Detach error: {str(de)}")
+                                  cfnresponse.send(event, context, cfnresponse.FAILED, 
+                                      {'Error': f"Failed to detach volume: {str(de)}"})
+                                  return
                       
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
                       return
@@ -133,6 +136,7 @@ Resources:
                   - ec2:CreateTags
                   - ec2:DescribeVolumeAttribute
                   - ec2:DescribeVolumeStatus
+                  - ec2:DetachVolume
                 Resource: '*'
 
   VolumeSearch:
