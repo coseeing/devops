@@ -85,25 +85,59 @@ jobs:
             TargetInstanceId=${{ steps.get-instance.outputs.instance_id }}
           no-fail-on-empty-changeset: "1"
 
-      - name: Setup Ansible
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ansible
-
-      - name: Generate Ansible inventory
-        run: |
-          INSTANCE_IP=$(aws ec2 describe-instances \
-            --instance-ids ${{ steps.get-instance.outputs.instance_id }} \
-            --query 'Reservations[0].Instances[0].PublicIpAddress' \
-            --output text)
-          echo "instance_ip=${INSTANCE_IP}" >> $GITHUB_OUTPUT
-          echo "[servers]" > inventory.ini
-          echo "${INSTANCE_IP} ansible_user=ec2-user ansible_ssh_private_key_file=private_key.pem" >> inventory.ini
-
       - name: Set SSH Key
         uses: webfactory/ssh-agent@v0.5.4
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies in virtual environment
+        run: |
+          which python
+          python -m venv venv
+          source venv/bin/activate
+          which python
+          pip install --upgrade pip
+          pip install ansible boto3 botocore
+          ansible-galaxy collection install community.docker community.aws --upgrade
+
+      - name: Get instance public IP
+        id: get_ip
+        run: |
+          IP=$(aws cloudformation describe-stacks --stack-name ${{ github.event.inputs.source_stack_name }} --query "Stacks[0].Outputs[?OutputKey=='InstancePublicIp'].OutputValue" --output text)
+          echo "Instance Public IP: $IP"
+          echo "IP=$IP" >> $GITHUB_OUTPUT
+
+      - name: Write inventory file
+        run: |
+          INVENTORY_FILE="inventory"
+          INSTANCE_NAME="${{ github.event.inputs.source_stack_name }}"
+          INSTANCE_IP="${{ steps.get_ip.outputs.IP }}"
+          ANSIBLE_USER="ubuntu"
+
+          # Check if the inventory file exists
+          if [ -f "$INVENTORY_FILE" ]; then
+            # Check if the group [INSTANCE_NAME] already exists
+            if grep -q "^\[$INSTANCE_NAME\]" "$INVENTORY_FILE"; then
+              echo "Group [$INSTANCE_NAME] already exists in $INVENTORY_FILE."
+            else
+              # Append the group and host information
+              echo -e "\n[$INSTANCE_NAME]\n$INSTANCE_IP ansible_user=$ANSIBLE_USER" >> "$INVENTORY_FILE"
+              echo "Appended new group [$INSTANCE_NAME] with IP $INSTANCE_IP to $INVENTORY_FILE."
+            fi
+          else
+            # Create the inventory file with the group and host information
+            echo "[$INSTANCE_NAME]" > "$INVENTORY_FILE"
+            echo "$INSTANCE_IP ansible_user=$ANSIBLE_USER" >> "$INVENTORY_FILE"
+            echo "Created $INVENTORY_FILE with group [$INSTANCE_NAME] and IP $INSTANCE_IP."
+          fi
+
+          # Display the inventory file content
+          cat "$INVENTORY_FILE"
 
       - name: Generate Ansible playbook
         run: |
@@ -201,7 +235,9 @@ jobs:
              directory mask = 0755
           EOL
 
-      - name: Run Ansible playbook
+      - name: Run Ansible Playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
-          export ANSIBLE_HOST_KEY_CHECKING=False
-          ansible-playbook -i inventory.ini mount_volume.yml
+          source venv/bin/activate
+          ansible-playbook -i inventory mount_volume.yml
