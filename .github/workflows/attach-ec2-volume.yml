@@ -20,7 +20,7 @@ on:
       volume_device:
         description: "Volume Device Name"
         required: true
-        default: "/dev/sdf"
+        default: "/dev/xvdf"
       source_stack_name:
         description: "Source Stack Name (to get EC2 instance ID)"
         required: true
