@@ -72,7 +72,34 @@ jobs:
             exit 1
           fi
 
+      - name: Check if volume is already attached
+        id: check-volume
+        run: |
+          VOLUME_ID=$(aws ec2 describe-volumes \
+            --filters "Name=tag:Name,Values=${{ github.event.inputs.volume_name }}" \
+            --query "Volumes[0].VolumeId" \
+            --output text)
+          
+          if [ "$VOLUME_ID" != "None" ] && [ ! -z "$VOLUME_ID" ]; then
+            ATTACHMENT_STATE=$(aws ec2 describe-volumes \
+              --volume-ids $VOLUME_ID \
+              --query "Volumes[0].Attachments[0].State" \
+              --output text)
+            
+            if [ "$ATTACHMENT_STATE" = "attached" ]; then
+              echo "Volume ${{ github.event.inputs.volume_name }} is already attached"
+              echo "skip_deployment=true" >> $GITHUB_OUTPUT
+            else
+              echo "Volume exists but not attached"
+              echo "skip_deployment=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Volume does not exist"
+            echo "skip_deployment=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Deploy CloudFormation stack
+        if: steps.check-volume.outputs.skip_deployment != 'true'
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: ${{ github.event.inputs.stack_name }}
