@@ -173,6 +173,24 @@ jobs:
                   fstype: ext4
                   state: mounted
 
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}/server"
+                  state: directory
+                  mode: '0755'
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}/nginx"
+                  state: directory
+                  mode: '0755'
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}/nginx/edm"
+                  state: directory
+                  mode: '0755'
+
               - name: Install Samba packages
                 package:
                   name: 
@@ -219,20 +237,43 @@ jobs:
           mkdir -p templates
           cat > templates/smb.conf.j2 << 'EOL'
           [global]
-             workgroup = WORKGROUP
-             security = user
-             map to guest = never
-             log file = /var/log/samba/%m.log
-             max log size = 50
-             server role = standalone server
-
-          [data]
-             path = {{ mount_path }}
-             valid users = {{ samba_user }}
-             browseable = yes
-             writable = yes
-             create mask = 0644
-             directory mask = 0755
+          workgroup = coseeing
+           netbios name = coseeing-server
+           server string = This is coseeing-server's samba server
+           unix charset = utf8
+           log file = /var/log/samba/log.%m
+           max log size = 50
+           load printers = no
+          
+           security = user
+           passdb backend = tdbsam
+          
+          [root]
+           comment = root
+           path = /
+           browseable = yes
+           writable = yes
+           valid users = root
+           create mode = 0644
+           directory mode = 0755
+          
+          [webdata]
+           comment = webdata
+           path = ${{ github.event.inputs.mount_path }}/server
+           browseable = yes
+           writable = yes
+           valid users = root, vipastaiwan
+           create mode = 0644
+           directory mode = 0755
+          
+          [edm]
+           comment = edm
+           path = ${{ github.event.inputs.mount_path }}/nginx/edm
+           browseable = yes
+           writable = yes
+           valid users = root, vipastaiwan
+           create mode = 0644
+           directory mode = 0755
           EOL
 
       - name: Run Ansible Playbook
