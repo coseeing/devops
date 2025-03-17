@@ -71,7 +71,6 @@ Resources:
                       
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
                       return
-                      
                   if event['RequestType'] in ['Create', 'Update']:
                       ec2 = boto3.client('ec2')
                       volume_name = event['ResourceProperties']['VolumeName']
