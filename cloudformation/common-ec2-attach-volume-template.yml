@@ -31,6 +31,7 @@ Resources:
       Runtime: python3.9
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
       Code:
         ZipFile: |
           import boto3
