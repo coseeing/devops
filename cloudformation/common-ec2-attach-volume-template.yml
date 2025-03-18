@@ -38,37 +38,7 @@ Resources:
           
           def handler(event, context):
               try:
-                  if event['RequestType'] == 'Delete':
-                      ec2 = boto3.client('ec2')
-                      volume_name = event['ResourceProperties']['VolumeName']
-                      az = event['ResourceProperties']['AvailabilityZone']
-
-                      response = ec2.describe_volumes(
-                          Filters=[
-                              {'Name': 'tag:Name', 'Values': [volume_name]},
-                              {'Name': 'availability-zone', 'Values': [az]}
-                          ]
-                      )
-
-                      if response['Volumes']:
-                          volume_id = response['Volumes'][0]['VolumeId']
-                          print(f"Found volume {volume_id} during deletion")
-                        
-                          if response['Volumes'][0]['Attachments']:
-                              attachment = response['Volumes'][0]['Attachments'][0]
-                              print(f"Volume {volume_id} is attached to {attachment['InstanceId']}, detaching...")
-                              
-                              try:
-                                  ec2.detach_volume(VolumeId=volume_id)
-                                  waiter = ec2.get_waiter('volume_available')
-                                  waiter.wait(VolumeIds=[volume_id])
-                                  print(f"Volume {volume_id} successfully detached")
-                              except Exception as de:
-                                  print(f"Detach error: {str(de)}")
-                                  cfnresponse.send(event, context, cfnresponse.FAILED, 
-                                      {'Error': f"Failed to detach volume: {str(de)}"})
-                                  return
-                      
+                  if event['RequestType'] == 'Delete':                 
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
                       return
                   if event['RequestType'] in ['Create', 'Update']:
@@ -99,11 +69,6 @@ Resources:
                               }]
                           )
                           volume_id = new_volume['VolumeId']
-                          
-                          # Wait for volume to be available
-                          waiter = ec2.get_waiter('volume_available')
-                          waiter.wait(VolumeIds=[volume_id])
-                      
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, 
                           {'VolumeId': volume_id})
               except Exception as e:
