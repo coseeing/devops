@@ -20,17 +20,30 @@ on:
       volume_device:
         description: "Volume Device Name"
         required: true
-        default: "/dev/sdf"
+        default: "/dev/xvdf"
       source_stack_name:
         description: "Source Stack Name (to get EC2 instance ID)"
         required: true
+      mount_path:
+        description: "Mount Path"
+        required: true
+        default: "/data"
+      setup_samba:
+        description: "Setup Samba Server"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  attach:
+  deployment:
+    environment: a11y-village-production
     name: attach ebs volume
     runs-on: ubuntu-latest
     permissions:
@@ -59,7 +72,34 @@ jobs:
             exit 1
           fi
 
+      - name: Check if volume is already attached
+        id: check-volume
+        run: |
+          VOLUME_ID=$(aws ec2 describe-volumes \
+            --filters "Name=tag:Name,Values=${{ github.event.inputs.volume_name }}" \
+            --query "Volumes[0].VolumeId" \
+            --output text)
+          
+          if [ "$VOLUME_ID" != "None" ] && [ ! -z "$VOLUME_ID" ]; then
+            ATTACHMENT_STATE=$(aws ec2 describe-volumes \
+              --volume-ids $VOLUME_ID \
+              --query "Volumes[0].Attachments[0].State" \
+              --output text)
+            
+            if [ "$ATTACHMENT_STATE" = "attached" ]; then
+              echo "Volume ${{ github.event.inputs.volume_name }} is already attached"
+              echo "skip_deployment=true" >> $GITHUB_OUTPUT
+            else
+              echo "Volume exists but not attached"
+              echo "skip_deployment=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Volume does not exist"
+            echo "skip_deployment=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Deploy CloudFormation stack
+        if: steps.check-volume.outputs.skip_deployment != 'true'
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: ${{ github.event.inputs.stack_name }}
@@ -71,3 +111,201 @@ jobs:
             VolumeDevice=${{ github.event.inputs.volume_device }},
             TargetInstanceId=${{ steps.get-instance.outputs.instance_id }}
           no-fail-on-empty-changeset: "1"
+
+      - name: Set SSH Key
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies in virtual environment
+        run: |
+          which python
+          python -m venv venv
+          source venv/bin/activate
+          which python
+          pip install --upgrade pip
+          pip install ansible boto3 botocore
+          ansible-galaxy collection install community.docker community.aws --upgrade
+
+      - name: Get instance public IP
+        id: get_ip
+        run: |
+          IP=$(aws cloudformation describe-stacks --stack-name ${{ github.event.inputs.source_stack_name }} --query "Stacks[0].Outputs[?OutputKey=='InstancePublicIp'].OutputValue" --output text)
+          echo "Instance Public IP: $IP"
+          echo "IP=$IP" >> $GITHUB_OUTPUT
+
+      - name: Write inventory file
+        run: |
+          INVENTORY_FILE="inventory"
+          INSTANCE_NAME="${{ github.event.inputs.source_stack_name }}"
+          INSTANCE_IP="${{ steps.get_ip.outputs.IP }}"
+          ANSIBLE_USER="ubuntu"
+
+          # Check if the inventory file exists
+          if [ -f "$INVENTORY_FILE" ]; then
+            # Check if the group [INSTANCE_NAME] already exists
+            if grep -q "^\[$INSTANCE_NAME\]" "$INVENTORY_FILE"; then
+              echo "Group [$INSTANCE_NAME] already exists in $INVENTORY_FILE."
+            else
+              # Append the group and host information
+              echo -e "\n[$INSTANCE_NAME]\n$INSTANCE_IP ansible_user=$ANSIBLE_USER" >> "$INVENTORY_FILE"
+              echo "Appended new group [$INSTANCE_NAME] with IP $INSTANCE_IP to $INVENTORY_FILE."
+            fi
+          else
+            # Create the inventory file with the group and host information
+            echo "[$INSTANCE_NAME]" > "$INVENTORY_FILE"
+            echo "$INSTANCE_IP ansible_user=$ANSIBLE_USER" >> "$INVENTORY_FILE"
+            echo "Created $INVENTORY_FILE with group [$INSTANCE_NAME] and IP $INSTANCE_IP."
+          fi
+
+          # Display the inventory file content
+          cat "$INVENTORY_FILE"
+
+      - name: Generate Ansible playbook
+        run: |
+          cat > mount_volume.yml << 'EOL'
+          ---
+          - name: Configure mount point and optional Samba
+            hosts: all
+            become: yes
+            vars:
+              mount_path: "${{ github.event.inputs.mount_path }}"
+              device_name: "${{ github.event.inputs.volume_device }}"
+              setup_samba: ${{ github.event.inputs.setup_samba }}
+              samba_user: "${{ secrets.SAMBA_USER }}"
+              samba_password: "${{ secrets.SAMBA_PASSWORD }}"
+
+            tasks:
+              - name: Create filesystem if not exists
+                filesystem:
+                  fstype: ext4
+                  dev: "{{ device_name }}"
+                when: ansible_facts.mounts | selectattr('device', 'equalto', device_name) | list | length == 0
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}"
+                  state: directory
+                  mode: '0755'
+
+              - name: Mount volume
+                mount:
+                  path: "{{ mount_path }}"
+                  src: "{{ device_name }}"
+                  fstype: ext4
+                  state: mounted
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}/server"
+                  state: directory
+                  mode: '0755'
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}/nginx"
+                  state: directory
+                  mode: '0755'
+
+              - name: Create mount point directory
+                file:
+                  path: "{{ mount_path }}/nginx/edm"
+                  state: directory
+                  mode: '0755'
+
+              - name: Install Samba packages
+                package:
+                  name: 
+                    - samba
+                    - samba-common
+                  state: present
+                when: setup_samba | bool
+
+              - name: Create samba user
+                user:
+                  name: "{{ samba_user }}"
+                  state: present
+                  system: yes
+                when: setup_samba | bool
+
+              - name: Set samba user password
+                shell: "(echo '{{ samba_password }}'; echo '{{ samba_password }}') | smbpasswd -s -a {{ samba_user }}"
+                when: setup_samba | bool
+
+              - name: Configure Samba
+                template:
+                  src: smb.conf.j2
+                  dest: /etc/samba/smb.conf
+                when: setup_samba | bool
+                notify: restart samba
+
+              - name: Ensure Samba is running
+                service:
+                  name: smbd
+                  state: started
+                  enabled: yes
+                when: setup_samba | bool
+
+            handlers:
+              - name: restart samba
+                service:
+                  name: smbd
+                  state: restarted
+                when: setup_samba | bool
+          EOL
+
+      - name: Create Samba config template
+        run: |
+          mkdir -p templates
+          cat > templates/smb.conf.j2 << 'EOL'
+          [global]
+          workgroup = coseeing
+           netbios name = coseeing-server
+           server string = This is coseeing-server's samba server
+           unix charset = utf8
+           log file = /var/log/samba/log.%m
+           max log size = 50
+           load printers = no
+          
+           security = user
+           passdb backend = tdbsam
+          
+          [root]
+           comment = root
+           path = /
+           browseable = yes
+           writable = yes
+           valid users = root
+           create mode = 0644
+           directory mode = 0755
+          
+          [webdata]
+           comment = webdata
+           path = ${{ github.event.inputs.mount_path }}/server
+           browseable = yes
+           writable = yes
+           valid users = root, vipastaiwan
+           create mode = 0644
+           directory mode = 0755
+          
+          [edm]
+           comment = edm
+           path = ${{ github.event.inputs.mount_path }}/nginx/edm
+           browseable = yes
+           writable = yes
+           valid users = root, vipastaiwan
+           create mode = 0644
+           directory mode = 0755
+          EOL
+
+      - name: Run Ansible Playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
+        run: |
+          source venv/bin/activate
+          ansible-playbook -i inventory mount_volume.yml
