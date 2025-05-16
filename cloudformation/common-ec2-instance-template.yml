@@ -51,7 +51,8 @@ Resources:
       AvailabilityZone: !Ref AvailabilityZone
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref EC2InstanceProfile
-      SecurityGroupIds: !Ref SecurityGroups
+      SecurityGroupIds: 
+        - !Ref SecurityGroups
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
@@ -68,48 +69,36 @@ Resources:
       Roles:
         - coseeing-ec2-common
 
-  # VPC Endpoint for RDS
-  RdsVpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Condition: CreateRdsPrivateLink
-    Properties:
-      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.rds'
-      VpcEndpointType: Interface
-      VpcId: !GetAtt EC2Instance.VpcId
-      SubnetIds: 
-        - !GetAtt EC2Instance.SubnetId
-      SecurityGroupIds:
-        - !Ref VpcEndpointSecurityGroup
-      PrivateDnsEnabled: true
-
-  # Security Group for VPC Endpoint
-  VpcEndpointSecurityGroup:
+  EC2RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Condition: CreateRdsPrivateLink
     Properties:
-      GroupDescription: Security group for RDS VPC Endpoint
+      GroupDescription: Security group for EC2 to RDS connection
+      VpcId: !GetAtt EC2Instance.VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          DestinationSecurityGroupId: !Ref RdsSecurityGroup
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateRdsPrivateLink
+    Properties:
+      GroupDescription: Security group for RDS to EC2 connection
       VpcId: !GetAtt EC2Instance.VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2RdsSecurityGroup
 
-  # IAM Policy for RDS Access
-  RdsAccessPolicy:
-    Type: AWS::IAM::Policy
+  EC2InstanceSecurityGroupAttachment:
+    Type: AWS::EC2::InstanceSecurityGroupAttachment
     Condition: CreateRdsPrivateLink
     Properties:
-      PolicyName: RdsAccessPolicy
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - rds-db:connect
-            Resource: !Sub 'arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsName}/*'
-      Roles:
-        - coseeing-ec2-common
+      InstanceId: !Ref EC2Instance
+      SecurityGroupId: !Ref EC2RdsSecurityGroup
 
 Outputs:
   InstanceId:
@@ -121,9 +110,3 @@ Outputs:
   InstancePublicIp:
     Description: The public IP address of the EC2 instance
     Value: !GetAtt [EC2Instance, PublicIp]
-  RdsVpcEndpointId:
-    Description: ID of the RDS VPC Endpoint
-    Value: !If 
-      - CreateRdsPrivateLink
-      - !Ref RdsVpcEndpoint
-      - "No RDS Private Link created"
