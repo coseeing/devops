@@ -72,6 +72,7 @@ Resources:
   RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Condition: CreateRdsPrivateLink
+    DependsOn: EC2Instance
     Properties:
       GroupDescription: Security group for RDS to EC2 connection
       VpcId: !GetAtt EC2Instance.VpcId
@@ -79,6 +80,7 @@ Resources:
   EC2RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Condition: CreateRdsPrivateLink
+    DependsOn: EC2Instance
     Properties:
       GroupDescription: Security group for EC2 to RDS connection
       VpcId: !GetAtt EC2Instance.VpcId
@@ -91,6 +93,9 @@ Resources:
   RdsSecurityGroupIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: CreateRdsPrivateLink
+    DependsOn: 
+      - EC2RdsSecurityGroup
+      - RdsSecurityGroup
     Properties:
       GroupId: !Ref RdsSecurityGroup
       IpProtocol: tcp
@@ -98,20 +103,23 @@ Resources:
       ToPort: 3306
       SourceSecurityGroupId: !Ref EC2RdsSecurityGroup
 
-  EC2InstanceSecurityGroupAttachment:
-    Type: AWS::EC2::InstanceSecurityGroupAttachment
-    Condition: CreateRdsPrivateLink
-    Properties:
-      InstanceId: !Ref EC2Instance
-      SecurityGroupId: !Ref EC2RdsSecurityGroup
-
   RdsSecurityGroupAttachment:
     Type: AWS::RDS::DBInstance
     Condition: CreateRdsPrivateLink
+    DependsOn: RdsSecurityGroup
     Properties:
       DBInstanceIdentifier: !Ref RdsName
       VPCSecurityGroups:
         - !Ref RdsSecurityGroup
+
+  EC2SecurityGroupAttachment:
+    Type: AWS::EC2::Instance
+    Condition: CreateRdsPrivateLink
+    DependsOn: EC2RdsSecurityGroup
+    Properties:
+      InstanceId: !Ref EC2Instance
+      SecurityGroupIds:
+        - !Ref EC2RdsSecurityGroup
 
 Outputs:
   InstanceId:
