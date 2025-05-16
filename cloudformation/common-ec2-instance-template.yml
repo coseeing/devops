@@ -30,6 +30,20 @@ Parameters:
     Type: Number
     Default: 8
     Description: Size of the root EBS volume in GB
+  PrivateRouteTableId:
+    Type: AWS::EC2::RouteTable::Id
+    Description: ID of the private route table for the VPC
+  RdsName:
+    Type: String
+    Description: Name of the RDS instance
+    Default: ""
+  RdsEndpoint:
+    Type: String
+    Description: Endpoint of the RDS instance
+    Default: ""
+
+Conditions:
+  CreateRdsPrivateLink: !Not [!Equals [!Ref RdsName, ""]]
 
 Resources:
   EC2Instance:
@@ -57,6 +71,57 @@ Resources:
       Roles:
         - coseeing-ec2-common
 
+  # VPC Endpoint for RDS
+  RdsVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateRdsPrivateLink
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.rds'
+      VpcEndpointType: Interface
+      VpcId: !Ref VpcId
+      SubnetIds: 
+        - !Ref PrivateSubnetId
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  # Security Group for VPC Endpoint
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateRdsPrivateLink
+    Properties:
+      GroupDescription: Security group for RDS VPC Endpoint
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  # Route Table Entry for RDS
+  RdsRouteTableEntry:
+    Type: AWS::EC2::Route
+    Condition: CreateRdsPrivateLink
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableId
+      DestinationCidrBlock: !Sub '${AWS::Region}.rds.amazonaws.com'
+      VpcEndpointId: !Ref RdsVpcEndpoint
+
+  # IAM Policy for RDS Access
+  RdsAccessPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateRdsPrivateLink
+    Properties:
+      PolicyName: RdsAccessPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - rds-db:connect
+            Resource: !Sub 'arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsName}/*'
+      Roles:
+        - !Ref EC2InstanceRole
+
 Outputs:
   InstanceId:
     Description: The Instance ID
@@ -67,3 +132,9 @@ Outputs:
   InstancePublicIp:
     Description: The public IP address of the EC2 instance
     Value: !GetAtt [EC2Instance, PublicIp]
+  RdsVpcEndpointId:
+    Description: ID of the RDS VPC Endpoint
+    Value: !If 
+      - CreateRdsPrivateLink
+      - !Ref RdsVpcEndpoint
+      - "No RDS Private Link created"
