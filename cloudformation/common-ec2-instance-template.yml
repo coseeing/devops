@@ -120,7 +120,7 @@ Resources:
               - rds-db:connect
             Resource: !Sub 'arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsName}/*'
       Roles:
-        - !Ref EC2InstanceRole
+        - coseeing-ec2-common
 
 Outputs:
   InstanceId:
