@@ -98,9 +98,9 @@ Resources:
           ToPort: 443
           CidrIp: 0.0.0.0/0
 
-  # 使用 AWS::EC2::RouteTable::Id 類型來引用現有的 Route Table
+  # 使用 AWS::EC2::RouteTable 來引用現有的 Route Table
   RouteTable:
-    Type: AWS::EC2::RouteTable::Id
+    Type: AWS::EC2::RouteTable
     Properties:
       RouteTableId: !Ref PrivateRouteTableId
 
