@@ -71,22 +71,6 @@ Resources:
       Roles:
         - coseeing-ec2-common
 
-  # Get VPC ID from Route Table
-  VpcId:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/ec2/vpc/${PrivateRouteTableId}'
-      Type: String
-      Value: !Ref PrivateRouteTableId
-
-  # Get Private Subnet ID from Route Table
-  PrivateSubnetId:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/ec2/private-subnet/${PrivateRouteTableId}'
-      Type: String
-      Value: !Ref PrivateRouteTableId
-
   # VPC Endpoint for RDS
   RdsVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -94,9 +78,9 @@ Resources:
     Properties:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.rds'
       VpcEndpointType: Interface
-      VpcId: !GetAtt VpcId.Value
+      VpcId: !GetAtt RouteTable.VpcId
       SubnetIds: 
-        - !GetAtt PrivateSubnetId.Value
+        - !GetAtt RouteTable.SubnetId
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
       PrivateDnsEnabled: true
@@ -107,12 +91,18 @@ Resources:
     Condition: CreateRdsPrivateLink
     Properties:
       GroupDescription: Security group for RDS VPC Endpoint
-      VpcId: !Ref VpcId
+      VpcId: !GetAtt RouteTable.VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
+
+  # 添加 RouteTable 資源來獲取 VPC 和 Subnet 信息
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableId
 
   # IAM Policy for RDS Access
   RdsAccessPolicy:
