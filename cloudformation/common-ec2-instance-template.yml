@@ -30,9 +30,6 @@ Parameters:
     Type: Number
     Default: 8
     Description: Size of the root EBS volume in GB
-  PrivateRouteTableId:
-    Type: String
-    Description: ID of the private route table for the VPC
   RdsName:
     Type: String
     Description: Name of the RDS instance
@@ -78,9 +75,9 @@ Resources:
     Properties:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.rds'
       VpcEndpointType: Interface
-      VpcId: !GetAtt RouteTable.VpcId
+      VpcId: !GetAtt EC2Instance.VpcId
       SubnetIds: 
-        - !GetAtt RouteTable.SubnetId
+        - !GetAtt EC2Instance.SubnetId
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
       PrivateDnsEnabled: true
@@ -91,18 +88,12 @@ Resources:
     Condition: CreateRdsPrivateLink
     Properties:
       GroupDescription: Security group for RDS VPC Endpoint
-      VpcId: !GetAtt RouteTable.VpcId
+      VpcId: !GetAtt EC2Instance.VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-
-  # 使用 AWS::EC2::RouteTable 來引用現有的 Route Table
-  RouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      RouteTableId: !Ref PrivateRouteTableId
 
   # IAM Policy for RDS Access
   RdsAccessPolicy:

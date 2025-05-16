@@ -73,7 +73,6 @@ jobs:
             InstanceName=${{ github.event.inputs.instance_name }},
             SecurityGroups="sg-098baa9d7eaf501a8,sg-0d260cbf1556be14b,sg-09786ad8171652b3b",
             DiskSize=${{ github.event.inputs.disk_size }},
-            PrivateRouteTableId="rtb-00ab52d37d56d1b4b",
             RdsName=${{ github.event.inputs.rds_name }},
             RdsEndpoint=${{ github.event.inputs.rds_endpoint }}
           no-fail-on-empty-changeset: "1"
