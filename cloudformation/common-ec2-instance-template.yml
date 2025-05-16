@@ -71,6 +71,18 @@ Resources:
       Roles:
         - coseeing-ec2-common
 
+  # Get VPC ID from Route Table
+  VpcId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Properties:
+      Name: !Sub '/ec2/vpc/${PrivateRouteTableId}'
+
+  # Get Private Subnet ID from Route Table
+  PrivateSubnetId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Properties:
+      Name: !Sub '/ec2/private-subnet/${PrivateRouteTableId}'
+
   # VPC Endpoint for RDS
   RdsVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
