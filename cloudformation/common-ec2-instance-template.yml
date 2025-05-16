@@ -73,15 +73,19 @@ Resources:
 
   # Get VPC ID from Route Table
   VpcId:
-    Type: AWS::SSM::Parameter::Value<String>
+    Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub '/ec2/vpc/${PrivateRouteTableId}'
+      Type: String
+      Value: !Ref PrivateRouteTableId
 
   # Get Private Subnet ID from Route Table
   PrivateSubnetId:
-    Type: AWS::SSM::Parameter::Value<String>
+    Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub '/ec2/private-subnet/${PrivateRouteTableId}'
+      Type: String
+      Value: !Ref PrivateRouteTableId
 
   # VPC Endpoint for RDS
   RdsVpcEndpoint:
@@ -90,9 +94,9 @@ Resources:
     Properties:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.rds'
       VpcEndpointType: Interface
-      VpcId: !Ref VpcId
+      VpcId: !GetAtt VpcId.Value
       SubnetIds: 
-        - !Ref PrivateSubnetId
+        - !GetAtt PrivateSubnetId.Value
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
 
