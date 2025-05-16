@@ -99,6 +99,7 @@ Resources:
         - !GetAtt PrivateSubnetId.Value
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
 
   # Security Group for VPC Endpoint
   VpcEndpointSecurityGroup:
@@ -112,15 +113,6 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-
-  # Route Table Entry for RDS
-  RdsRouteTableEntry:
-    Type: AWS::EC2::Route
-    Condition: CreateRdsPrivateLink
-    Properties:
-      RouteTableId: !Ref PrivateRouteTableId
-      DestinationCidrBlock: !Sub '${AWS::Region}.rds.amazonaws.com'
-      VpcEndpointId: !Ref RdsVpcEndpoint
 
   # IAM Policy for RDS Access
   RdsAccessPolicy:
