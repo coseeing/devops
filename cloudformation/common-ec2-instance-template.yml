@@ -31,7 +31,7 @@ Parameters:
     Default: 8
     Description: Size of the root EBS volume in GB
   PrivateRouteTableId:
-    Type: AWS::EC2::RouteTable::Id
+    Type: String
     Description: ID of the private route table for the VPC
   RdsName:
     Type: String
