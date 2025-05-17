@@ -40,8 +40,7 @@ Resources:
       AvailabilityZone: !Ref AvailabilityZone
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref EC2InstanceProfile
-      SecurityGroupIds: 
-        - !Ref SecurityGroups
+      SecurityGroupIds: !Ref SecurityGroups
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
