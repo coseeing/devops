@@ -30,17 +30,6 @@ Parameters:
     Type: Number
     Default: 8
     Description: Size of the root EBS volume in GB
-  RdsName:
-    Type: String
-    Description: Name of the RDS instance
-    Default: ""
-  RdsEndpoint:
-    Type: String
-    Description: Endpoint of the RDS instance
-    Default: ""
-
-Conditions:
-  CreateRdsPrivateLink: !Not [!Equals [!Ref RdsName, ""]]
 
 Resources:
   EC2Instance:

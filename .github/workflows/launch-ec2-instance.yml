@@ -30,18 +30,6 @@ on:
         description: "Root Volume Size (GB)"
         required: true
         default: "8"
-      rds_name:
-        description: "RDS Instance Name"
-        required: false
-        default: "coseeing-main"
-      rds_endpoint:
-        description: "RDS Endpoint"
-        required: false
-        default: "coseeing-main.c36wy6akucw9.ap-northeast-1.rds.amazonaws.com"
-
-permissions:
-  contents: write
-  pull-requests: write
 
 jobs:
   launch:
@@ -72,7 +60,5 @@ jobs:
             KeyName=${{ github.event.inputs.key_name }},
             InstanceName=${{ github.event.inputs.instance_name }},
             SecurityGroups="sg-098baa9d7eaf501a8,sg-0d260cbf1556be14b,sg-09786ad8171652b3b,sg-0d2eb1e76445e2b4c",
-            DiskSize=${{ github.event.inputs.disk_size }},
-            RdsName=${{ github.event.inputs.rds_name }},
-            RdsEndpoint=${{ github.event.inputs.rds_endpoint }}
+            DiskSize=${{ github.event.inputs.disk_size }}
           no-fail-on-empty-changeset: "1"
