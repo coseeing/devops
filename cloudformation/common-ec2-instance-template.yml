@@ -69,58 +69,6 @@ Resources:
       Roles:
         - coseeing-ec2-common
 
-  RdsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Condition: CreateRdsPrivateLink
-    DependsOn: EC2Instance
-    Properties:
-      GroupDescription: Security group for RDS to EC2 connection
-      VpcId: !GetAtt EC2Instance.VpcId
-
-  EC2RdsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Condition: CreateRdsPrivateLink
-    DependsOn: EC2Instance
-    Properties:
-      GroupDescription: Security group for EC2 to RDS connection
-      VpcId: !GetAtt EC2Instance.VpcId
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 3306
-          ToPort: 3306
-          DestinationSecurityGroupId: !Ref RdsSecurityGroup
-
-  RdsSecurityGroupIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Condition: CreateRdsPrivateLink
-    DependsOn: 
-      - EC2RdsSecurityGroup
-      - RdsSecurityGroup
-    Properties:
-      GroupId: !Ref RdsSecurityGroup
-      IpProtocol: tcp
-      FromPort: 3306
-      ToPort: 3306
-      SourceSecurityGroupId: !Ref EC2RdsSecurityGroup
-
-  RdsSecurityGroupAttachment:
-    Type: AWS::RDS::DBInstance
-    Condition: CreateRdsPrivateLink
-    DependsOn: RdsSecurityGroup
-    Properties:
-      DBInstanceIdentifier: !Ref RdsName
-      VPCSecurityGroups:
-        - !Ref RdsSecurityGroup
-
-  EC2SecurityGroupAttachment:
-    Type: AWS::EC2::Instance
-    Condition: CreateRdsPrivateLink
-    DependsOn: EC2RdsSecurityGroup
-    Properties:
-      InstanceId: !Ref EC2Instance
-      SecurityGroupIds:
-        - !Ref EC2RdsSecurityGroup
-
 Outputs:
   InstanceId:
     Description: The Instance ID
