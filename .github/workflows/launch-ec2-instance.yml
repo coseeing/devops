@@ -29,7 +29,7 @@ on:
       security_groups:
         description: "Security Group IDs (comma-separated)"
         required: true
-        default: "sg-098baa9d7eaf501a8,sg-0d260cbf1556be14b,sg-09786ad8171652b3b"
+        default: "sg-098baa9d7eaf501a8,sg-0d260cbf1556be14b,sg-066316b193b070e3c"
       disk_size:
         description: "Root Volume Size (GB)"
         required: true
