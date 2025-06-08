@@ -1,4 +1,4 @@
-name: Attach EBS Volume to EC2
+name: Create Filesystem and Samba
 
 on:
   workflow_dispatch:
