@@ -79,7 +79,7 @@
                     memory: 1G
               labels:
                 - "traefik.enable=true"
-                - "traefik.http.routers.a11yvillage.rule=Host(`a11yvillagebeta.coseeing.org`)"
+                - "traefik.http.routers.a11yvillage.rule=Host(`a11yvillage.coseeing.org`)"
                 - "traefik.http.routers.a11yvillage.entrypoints=websecure"
                 - "traefik.http.routers.a11yvillage.tls.certresolver=a11yvillageresolver"
                 - "traefik.docker.network=entry"
