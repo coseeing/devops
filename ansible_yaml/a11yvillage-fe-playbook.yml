@@ -4,7 +4,7 @@
   become_user: root
   vars:
     deploy_tag: ${{ github.event.inputs.deployTag }}
-    docker_compose_dir: /home/ubuntu/a11yvillage-web
+    docker_compose_dir: /home/data/a11yvillage-web
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
     webroot_path: '/var/www/html'  # the root path of your site
@@ -92,50 +92,6 @@
         enabled: yes
       become: true
 
-    - name: ensure nginx is at the latest version
-      apt: name=nginx state=latest
-      become: true
-
-    - name: Clone the certbot source directory
-      ansible.builtin.git:
-        depth: 1
-        repo: https://github.com/certbot/certbot
-        dest: "{{ certbot_source_directory }}"
-        update: true
-
-    - name: Create certbot in virtual environment
-      ansible.builtin.command: python3 tools/venv.py
-      args:
-        chdir: "{{ certbot_source_directory }}"
-
-    - name: Create Nginx configuration for domain
-      copy:
-        dest: /etc/nginx/sites-available/{{ domain }}
-        content: |
-          server {
-              listen 80;
-              server_name {{ domain }};
-              
-              location / {
-                  proxy_pass http://localhost:3000;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-              }
-          }
-
-    - name: Create symbolic links for Nginx sites
-      file:
-        src: "/etc/nginx/sites-available/{{ domain }}"
-        dest: "/etc/nginx/sites-enabled/{{ domain }}"
-        state: link
-
-    - name: Remove default Nginx site
-      file:
-        path: /etc/nginx/sites-enabled/default
-        state: absent
-
     - name: Ensure docker compose directory exists
       file:
         path: "{{ docker_compose_dir }}"
@@ -147,16 +103,34 @@
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
         content: |
+          version: "3.7"
           services:
             a11yvillage-web:
               container_name: a11yvillage-web
               image: {{ image_name }}
               restart: always
-              ports:
-                - "3000:3000"
+              deploy:
+                resources:
+                  limits:
+                    cpus: '0.70'
+                    memory: 1G
+              labels:
+                - "traefik.enable=true"
+                - "traefik.http.routers.a11yvillage.rule=Host(`a11yvillageBeta.coseeing.org`)"
+                - "traefik.http.routers.a11yvillage.entrypoints=websecure"
+                - "traefik.http.routers.a11yvillage.tls.certresolver=a11yvillageresolver"
+                - "traefik.docker.network=entry"
+              networks:
+                - default
+                - entry
               environment:
                 - NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
                 - NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
+
+          networks:
+            entry:
+              driver: bridge
+              name: entry
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
@@ -201,23 +175,3 @@
     - name: Show compose_result Detail info
       debug:
         var: compose_result
-
-    - name: Generate the SSL certificate
-      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
-
-    - name: Set up automatic renewal
-      ansible.builtin.cron:
-        name: "Certbot automatic renewal"
-        job: "{{ certbot_executable_path }} renew --quiet"
-        minute: "11"
-        hour: "11"
-
-    - name: Kill all nginx processes using pkill
-      ansible.builtin.command: "pkill -9 nginx"
-      ignore_errors: true
-
-    - name: restart nginx
-      service:
-        name: nginx
-        state: restarted
-      become: true
