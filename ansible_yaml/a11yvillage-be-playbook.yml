@@ -4,7 +4,7 @@
   become_user: root
   vars:
     deploy_tag: ${{ github.event.inputs.deployTag }}
-    docker_compose_dir: /home/ubuntu/a11yvillage-server
+    docker_compose_dir: /home/data/a11yvillage-server
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
     webroot_path: '/var/www/html'  # the root path of your site
@@ -92,50 +92,6 @@
         enabled: yes
       become: true
 
-    - name: ensure nginx is at the latest version
-      apt: name=nginx state=latest
-      become: true
-
-    - name: Clone the certbot source directory
-      ansible.builtin.git:
-        depth: 1
-        repo: https://github.com/certbot/certbot
-        dest: "{{ certbot_source_directory }}"
-        update: true
-
-    - name: Create certbot in virtual environment
-      ansible.builtin.command: python3 tools/venv.py
-      args:
-        chdir: "{{ certbot_source_directory }}"
-
-    - name: Create Nginx configuration for api subdomain
-      copy:
-        dest: /etc/nginx/sites-available/{{ domain }}
-        content: |
-          server {
-              listen 80;
-              server_name {{ domain }};
-              
-              location / {
-                  proxy_pass http://localhost:8000;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-              }
-          }
-
-    - name: Create symbolic links for Nginx sites
-      file:
-        src: "/etc/nginx/sites-available/{{ domain }}"
-        dest: "/etc/nginx/sites-enabled/{{ domain }}"
-        state: link
-
-    - name: Remove default Nginx site
-      file:
-        path: /etc/nginx/sites-enabled/default
-        state: absent
-
     - name: Get info from AWS secret manager
       set_fact:
         secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
@@ -152,6 +108,13 @@
     - name: Ensure docker compose directory exists
       file:
         path: "{{ docker_compose_dir }}"
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Ensure docker compose directory exists
+      file:
+        path: "{{ docker_compose_dir }}/data"
         state: directory
         mode: '0755'
       become: true
@@ -177,8 +140,22 @@
               container_name: a11yvillage-server
               image: {{ image_name }}
               restart: always
-              ports:
-                - "8000:8000"
+              volumes:
+                - my-volume:/app/data
+              networks:
+                - default
+                - entry
+              labels:
+                - "traefik.enable=true"
+                - "traefik.http.routers.api-a11yvillage.rule=Host(`api.a11yvillage.coseeing.org`)"
+                - "traefik.http.routers.api-a11yvillage.entrypoints=websecure"
+                - "traefik.http.routers.api-a11yvillage.tls.certresolver=api-a11yvillageresolver"
+                - "traefik.docker.network=entry"
+              deploy:
+                resources:
+                  limits:
+                    cpus: '0.20'
+                    memory: 0.3G
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
               environment:
                 - SECRET_KEY=${SECRET_KEY}
@@ -188,6 +165,19 @@
                 - MARIADB_PORT=${MARIADB_PORT}
                 - MARIADB_DATABASE=${MARIADB_DATABASE}
                 - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+
+          volumes:
+            my-volume:
+              driver: local
+              driver_opts:
+                type: none
+                device: data
+                o: bind
+
+          networks:
+            entry:
+              driver: bridge
+              name: entry
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
@@ -232,23 +222,3 @@
     - name: Show compose_result Detail info
       debug:
         var: compose_result
-
-    - name: Generate the SSL certificate
-      ansible.builtin.command: "{{ certbot_executable_path }} --nginx -d {{ domain }} --non-interactive --agree-tos --email {{ email }}"
-
-    - name: Set up automatic renewal
-      ansible.builtin.cron:
-        name: "Certbot automatic renewal"
-        job: "{{ certbot_executable_path }} renew --quiet"
-        minute: "11"
-        hour: "11"
-
-    - name: Kill all nginx processes using pkill
-      ansible.builtin.command: "pkill -9 nginx"
-      ignore_errors: true
-
-    - name: restart nginx
-      service:
-        name: nginx
-        state: restarted
-      become: true
