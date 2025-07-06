@@ -129,6 +129,7 @@
                 - MARIADB_PORT=${MARIADB_PORT}
                 - MARIADB_DATABASE=${MARIADB_DATABASE}
                 - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+                - HOST=${HOST}
 
           volumes:
             my-volume:
