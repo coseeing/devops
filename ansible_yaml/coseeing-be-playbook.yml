@@ -113,7 +113,7 @@
                 - "traefik.enable=true"
                 - "traefik.http.routers.api-coseeing.rule=Host(`api.coseeing.org`)"
                 - "traefik.http.routers.api-coseeing.entrypoints=websecure"
-                - "traefik.http.routers.api-coseeing.tls.certresolver=api-coseeingresolver"
+                - "traefik.http.routers.api-coseeing.tls.certresolver=api-coseeing"
                 - "traefik.docker.network=entry"
               deploy:
                 resources:
