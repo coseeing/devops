@@ -19,6 +19,8 @@ on:
         options:
           - a11yvillage-be
           - a11yvillage-fe
+          - coseeing-fe
+          - coseeing-be
 
 jobs:
   deploy:
