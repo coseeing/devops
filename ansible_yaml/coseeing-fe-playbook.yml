@@ -68,8 +68,8 @@
         content: |
           version: "3.7"
           services:
-            a11yvillage-web:
-              container_name: a11yvillage-web
+            coseeing-web:
+              container_name: coseeing-web
               image: {{ image_name }}
               restart: always
               deploy:
@@ -79,9 +79,9 @@
                     memory: 1G
               labels:
                 - "traefik.enable=true"
-                - "traefik.http.routers.a11yvillage.rule=Host(`coseeing.org`)"
-                - "traefik.http.routers.a11yvillage.entrypoints=websecure"
-                - "traefik.http.routers.a11yvillage.tls.certresolver=coseeing"
+                - "traefik.http.routers.coseeing.rule=Host(`coseeing.org`)"
+                - "traefik.http.routers.coseeing.entrypoints=websecure"
+                - "traefik.http.routers.coseeing.tls.certresolver=coseeing"
                 - "traefik.docker.network=entry"
               networks:
                 - default
