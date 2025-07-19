@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: CloudFormation template for creating EC2 instances with same
-  permission policy, AZ, and existing security groups
+  permission policy, AZ, and existing security groups, and bind with Elastic IP
 
 Parameters:
   InstanceType:
@@ -57,13 +57,26 @@ Resources:
       Roles:
         - coseeing-ec2-common
 
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref EC2Instance
+      AllocationId: !GetAtt ElasticIP.AllocationId
+
 Outputs:
   InstanceId:
     Description: The Instance ID
     Value: !Ref EC2Instance
+
+  InstancePublicIp:
+    Description: The Elastic IP address associated with the instance
+    Value: !Ref ElasticIP
+
   PublicDNS:
     Description: Public DNS of the EC2 instance
     Value: !GetAtt EC2Instance.PublicDnsName
-  InstancePublicIp:
-    Description: The public IP address of the EC2 instance
-    Value: !GetAtt [EC2Instance, PublicIp]
