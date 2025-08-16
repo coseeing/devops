@@ -101,4 +101,5 @@ jobs:
           source venv/bin/activate
           ansible-playbook -i inventory \
             -e "deploy_tag=${{ github.event.inputs.deployTag }}" \
+            -e "server_ip=${{ steps.get_ip.outputs.IP }}" \
             ansible_yaml/${{ github.event.inputs.deploy_type }}-playbook.yml
