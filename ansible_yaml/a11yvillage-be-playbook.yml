@@ -121,6 +121,8 @@
                     cpus: '0.20'
                     memory: 0.3G
               command: ["sh", "-c", "python manage.py runserver 0.0.0.0:8000"]
+              env_file:
+                - .env
 
           volumes:
             my-volume:

@@ -94,6 +94,8 @@
               networks:
                 - default
                 - entry
+              env_file:
+                - .env
 
           networks:
             entry:
