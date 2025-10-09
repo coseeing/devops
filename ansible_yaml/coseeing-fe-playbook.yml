@@ -4,6 +4,7 @@
   become_user: root
   vars:
     deploy_tag: ${{ github.event.inputs.deployTag }}
+    server_ip: ${{ steps.get_ip.outputs.IP }}
     docker_compose_dir: /data/coseeing-web
     secret_name: prod/rdsuser/coseeing
     secret_region: ap-northeast-1
@@ -11,6 +12,8 @@
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
     domain: coseeing.org
+    traefik_certresolver: coseeing-web
+    traefik_router_prefix: coseeing-web-service--
     email: tsengwoody@coseeing.org
     ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
     image_name: "{{ ecr_location }}/coseeing-fe:{{ deploy_tag }}"
@@ -62,6 +65,24 @@
         mode: '0755'
       become: true
 
+    - name: Load Traefik source config (coseeing-fe)
+      set_fact:
+        traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/coseeing-fe.yml') | from_yaml }}"
+
+    - name: Transform Traefik config (placeholders -> prefix -> labels)
+      set_fact:
+        traefik_labels_list: "{{ (traefik_source_config
+          | replace_placeholders(domain, traefik_certresolver)
+          | apply_prefix(traefik_router_prefix)
+          ) | flatten_to_labels }}"
+
+    - name: Create .env file
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        content: |
+          NEXT_PUBLIC_BASE_URL=https://api.coseeing.org/about/api
+          NEXT_PUBLIC_GOOGLE_TAG_MANAGER_ID=GTM-NQQ79V67
+
     - name: Copy docker-compose.yml Document
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
@@ -76,19 +97,13 @@
                 resources:
                   limits:
                     cpus: '0.70'
-                    memory: 1G
-              labels:
-                - "traefik.enable=true"
-                - "traefik.http.routers.coseeing.rule=Host(`coseeing.org`)"
-                - "traefik.http.routers.coseeing.entrypoints=websecure"
-                - "traefik.http.routers.coseeing.tls.certresolver=coseeing"
-                - "traefik.docker.network=entry"
+                    memory: '1G'
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry'] + traefik_labels_list) | to_json }}
               networks:
                 - default
                 - entry
-              environment:
-                - NEXT_PUBLIC_BASE_URL=https://api.coseeing.org/about/api
-                - NEXT_PUBLIC_GOOGLE_TAG_MANAGER_ID=GTM-NQQ79V67
+              env_file:
+                - .env
 
           networks:
             entry:

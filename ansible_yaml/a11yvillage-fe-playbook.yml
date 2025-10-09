@@ -4,6 +4,7 @@
   become_user: root
   vars:
     deploy_tag: ${{ github.event.inputs.deployTag }}
+    server_ip: ${{ steps.get_ip.outputs.IP }}
     docker_compose_dir: /data/a11yvillage-web
     secret_name: prod/rdsuser/a11yvillage
     secret_region: ap-northeast-1
@@ -11,6 +12,8 @@
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
     domain: a11yvillage.coseeing.org
+    traefik_certresolver: a11yvillage-web
+    traefik_router_prefix: a11yvillage-web-service--
     email: tsengwoody@coseeing.org
     ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
     image_name: "{{ ecr_location }}/a11yvillage-fe:{{ deploy_tag }}"
@@ -62,6 +65,24 @@
         mode: '0755'
       become: true
 
+    - name: Load Traefik source config (a11yvillage-fe)
+      set_fact:
+        traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/a11yvillage-fe.yml') | from_yaml }}"
+
+    - name: Transform Traefik config (placeholders -> prefix -> labels)
+      set_fact:
+        traefik_labels_list: "{{ (traefik_source_config
+          | replace_placeholders(domain, traefik_certresolver)
+          | apply_prefix(traefik_router_prefix)
+          ) | flatten_to_labels }}"
+
+    - name: Create .env file
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        content: |
+          NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
+          NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
+
     - name: Copy docker-compose.yml Document
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
@@ -76,19 +97,13 @@
                 resources:
                   limits:
                     cpus: '0.70'
-                    memory: 1G
-              labels:
-                - "traefik.enable=true"
-                - "traefik.http.routers.a11yvillage.rule=Host(`a11yvillage.coseeing.org`)"
-                - "traefik.http.routers.a11yvillage.entrypoints=websecure"
-                - "traefik.http.routers.a11yvillage.tls.certresolver=a11yvillageresolver"
-                - "traefik.docker.network=entry"
+                    memory: '1G'
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry'] + traefik_labels_list) | to_json }}
               networks:
                 - default
                 - entry
-              environment:
-                - NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
-                - NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
+              env_file:
+                - .env
 
           networks:
             entry:

@@ -1,0 +1,31 @@
+http:
+  routers:
+    joinus:
+      rule: Host(`(`host`)`) && PathPrefix(`/joinUs`)
+      entrypoints: websecure
+      tls:
+        certresolver: (`certresolver`)
+      middlewares: joinus302
+    welcome:
+      rule: Host(`(`host`)`) && PathPrefix(`/welcome`)
+      entrypoints: websecure
+      tls:
+        certresolver: (`certresolver`)
+      middlewares: welcome302
+    https:
+      rule: Host(`(`host`)`)
+      entrypoints: websecure
+      tls:
+        certresolver: (`certresolver`)
+    http:
+      rule: Host(`(`host`)`)
+      entrypoints: webinsecure
+  middlewares:
+    joinus302:
+      redirectregex:
+        regex: ^.*$
+        replacement: https://docs.google.com/forms/d/e/1FAIpQLSepEFlPj1Lnkc1chqJCdj-7EgQGhPEJAajylBU1gyJgWA4ovw/viewform
+    welcome302:
+      redirectregex:
+        regex: ^.*$
+        replacement: https://medium.com/@a11yvillage
