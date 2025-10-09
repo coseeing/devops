@@ -106,7 +106,7 @@
               image: {{ image_name }}
               restart: always
               volumes:
-                - my-volume:/app/data
+                - coseeing-storage:/data
               networks:
                 - default
                 - entry
@@ -126,12 +126,13 @@
                 - .env
 
           volumes:
-            my-volume:
-              driver: local
+            coseeing-storage:
+              driver: rclone
               driver_opts:
-                type: none
-                device: data
-                o: bind
+                remote: 'coseeing-s3:coseeing'
+                allow_other: 'true'
+                vfs_cache_mode: full
+                poll_interval: 0
 
           networks:
             entry:
