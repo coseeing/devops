@@ -231,7 +231,9 @@
     - name: Restart traefik service
       docker_compose_v2:
         project_src: "{{ traefik_path }}"
-        state: present
+        state: restarted
+        services:
+          - traefik
       register: traefik_result
 
     - name: Show traefik_result Detail info
