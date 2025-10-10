@@ -139,7 +139,7 @@
     - name: Ensure resolver block exists in Traefik config (coseeing-fe)
       set_fact:
         traefik_config: "{{ traefik_config | combine({'certificatesResolvers': { (traefik_certresolver): { 'acme': { 'tlsChallenge': {}, 'email': email, 'storage': '/letsencrypt/' + traefik_certresolver + '.json' } }}}, recursive=True) }}"
-      when: (traefik_config.certificatesResolvers | default({})).get(traefik_certresolver) is not defined
+      when: traefik_certresolver not in (traefik_config.certificatesResolvers | default({}))
 
     - name: Write back Traefik config
       copy:
