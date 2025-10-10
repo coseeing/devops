@@ -110,6 +110,44 @@
               driver: bridge
               name: entry
 
+    - name: Ensure Traefik config directory exists
+      file:
+        path: /data/entry/entry
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Check if Traefik config exists
+      stat:
+        path: /data/entry/entry/traefik.yml
+      register: traefik_file
+
+    - name: Load Traefik config when present
+      slurp:
+        src: /data/entry/entry/traefik.yml
+      register: traefik_slurp
+      when: traefik_file.stat.exists
+
+    - name: Initialize Traefik config fact
+      set_fact:
+        traefik_config: "{{ (traefik_slurp.content | b64decode | from_yaml) if traefik_file.stat.exists else {} }}"
+
+    - name: Ensure certificatesResolvers map exists
+      set_fact:
+        traefik_config: "{{ traefik_config | combine({'certificatesResolvers': (traefik_config.certificatesResolvers | default({}))}, recursive=True) }}"
+
+    - name: Ensure resolver block exists in Traefik config (coseeing-fe)
+      set_fact:
+        traefik_config: "{{ traefik_config | combine({'certificatesResolvers': { (traefik_certresolver): { 'acme': { 'tlsChallenge': {}, 'email': email, 'storage': '/letsencrypt/' + traefik_certresolver + '.json' } }}}, recursive=True) }}"
+      when: (traefik_config.certificatesResolvers | default({})).get(traefik_certresolver) is not defined
+
+    - name: Write back Traefik config
+      copy:
+        dest: /data/entry/entry/traefik.yml
+        content: "{{ traefik_config | to_nice_yaml }}"
+        mode: '0644'
+      become: true
+
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
         name: unzip

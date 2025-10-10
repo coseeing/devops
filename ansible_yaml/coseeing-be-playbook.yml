@@ -12,6 +12,8 @@
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
     domain: api.coseeing.org
+    traefik_certresolver: coseeing-api
+    traefik_router_prefix: coseeing-api-service--
     email: tsengwoody@coseeing.org
     ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
     image_name: "{{ ecr_location }}/coseeing-be:{{ deploy_tag }}"
@@ -83,6 +85,17 @@
         mode: '0755'
       become: true
 
+    - name: Load Traefik source config (coseeing-be)
+      set_fact:
+        traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/coseeing-be.yml') | from_yaml }}"
+
+    - name: Transform Traefik config (placeholders -> prefix -> labels)
+      set_fact:
+        traefik_labels_list: "{{ (traefik_source_config
+          | replace_placeholders(domain, traefik_certresolver)
+          | apply_prefix(traefik_router_prefix)
+          ) | flatten_to_labels }}"
+
     - name: Create .env file
       copy:
         dest: "{{ docker_compose_dir }}/.env"
@@ -110,12 +123,7 @@
               networks:
                 - default
                 - entry
-              labels:
-                - "traefik.enable=true"
-                - "traefik.http.routers.api-coseeing.rule=Host(`api.coseeing.org`)"
-                - "traefik.http.routers.api-coseeing.entrypoints=websecure"
-                - "traefik.http.routers.api-coseeing.tls.certresolver=api-coseeing"
-                - "traefik.docker.network=entry"
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry'] + traefik_labels_list) | to_json }}
               deploy:
                 resources:
                   limits:
@@ -138,6 +146,42 @@
             entry:
               driver: bridge
               name: entry
+
+    - name: Ensure Traefik config directory exists
+      file:
+        path: /data/entry/entry
+        state: directory
+        mode: '0755'
+
+    - name: Check if Traefik config exists
+      stat:
+        path: /data/entry/entry/traefik.yml
+      register: traefik_file
+
+    - name: Load Traefik config when present
+      slurp:
+        src: /data/entry/entry/traefik.yml
+      register: traefik_slurp
+      when: traefik_file.stat.exists
+
+    - name: Initialize Traefik config fact
+      set_fact:
+        traefik_config: "{{ (traefik_slurp.content | b64decode | from_yaml) if traefik_file.stat.exists else {} }}"
+
+    - name: Ensure certificatesResolvers map exists
+      set_fact:
+        traefik_config: "{{ traefik_config | combine({'certificatesResolvers': (traefik_config.certificatesResolvers | default({}))}, recursive=True) }}"
+
+    - name: Ensure resolver block exists in Traefik config
+      set_fact:
+        traefik_config: "{{ traefik_config | combine({'certificatesResolvers': { (traefik_certresolver): { 'acme': { 'tlsChallenge': {}, 'email': email, 'storage': '/letsencrypt/' + traefik_certresolver + '.json' } }}}, recursive=True) }}"
+      when: (traefik_config.certificatesResolvers | default({})).get(traefik_certresolver) is not defined
+
+    - name: Write back Traefik config
+      copy:
+        dest: /data/entry/entry/traefik.yml
+        content: "{{ traefik_config | to_nice_yaml }}"
+        mode: '0644'
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
