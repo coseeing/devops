@@ -148,6 +148,7 @@
         content: "{{ traefik_config | to_nice_yaml }}"
         mode: '0644'
       become: true
+      register: traefik_write_result
 
     - name: Update the repository cache and update package "unzip" to latest version using default
       apt:
@@ -200,7 +201,9 @@
         services:
           - traefik
       register: traefik_result
+      when: traefik_write_result.changed
 
     - name: Show traefik_result Detail info
       debug:
         var: traefik_result
+      when: traefik_write_result.changed
