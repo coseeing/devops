@@ -17,6 +17,7 @@
     email: tsengwoody@coseeing.org
     ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
     image_name: "{{ ecr_location }}/a11yvillage-be:{{ deploy_tag }}"
+    traefik_path: /data/entry/entry
   collections:
     - community.docker
     - community.aws
@@ -147,19 +148,19 @@
 
     - name: Ensure Traefik config directory exists
       file:
-        path: /data/entry/entry
+        path: "{{ traefik_path }}"
         state: directory
         mode: '0755'
       become: true
 
     - name: Check if Traefik config exists
       stat:
-        path: /data/entry/entry/traefik.yml
+        path: "{{ traefik_path }}/traefik.yml"
       register: traefik_file
 
     - name: Load Traefik config when present
       slurp:
-        src: /data/entry/entry/traefik.yml
+        src: "{{ traefik_path }}/traefik.yml"
       register: traefik_slurp
       when: traefik_file.stat.exists
 
@@ -178,7 +179,7 @@
 
     - name: Write back Traefik config
       copy:
-        dest: /data/entry/entry/traefik.yml
+        dest: "{{ traefik_path }}/traefik.yml"
         content: "{{ traefik_config | to_nice_yaml }}"
         mode: '0644'
       become: true
@@ -226,3 +227,13 @@
     - name: Show compose_result Detail info
       debug:
         var: compose_result
+
+    - name: Restart traefik service
+      docker_compose_v2:
+        project_src: "{{ traefik_path }}"
+        state: present
+      register: traefik_result
+
+    - name: Show traefik_result Detail info
+      debug:
+        var: traefik_result
