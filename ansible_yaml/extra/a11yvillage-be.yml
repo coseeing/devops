@@ -1,0 +1,10 @@
+http:
+  routers:
+    https:
+      rule: Host(`(`host`)`)
+      entrypoints: websecure
+      tls:
+        certresolver: (`certresolver`)
+    http:
+      rule: Host(`(`host`)`)
+      entrypoints: webinsecure
