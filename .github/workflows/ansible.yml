@@ -141,21 +141,21 @@ jobs:
           HOSTED_ZONE_ID="${HOSTED_ZONE_ID##*/}"
 
           cat > change-batch.json <<EOF
-{
-  "Comment": "Update A record for ${DOMAIN} to point to ${IP}",
-  "Changes": [
-    {
-      "Action": "UPSERT",
-      "ResourceRecordSet": {
-        "Name": "${DOMAIN}",
-        "Type": "A",
-        "TTL": 60,
-        "ResourceRecords": [ { "Value": "${IP}" } ]
-      }
-    }
-  ]
-}
-EOF
+          {
+            "Comment": "Update A record for ${DOMAIN} to point to ${IP}",
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "${DOMAIN}",
+                  "Type": "A",
+                  "TTL": 60,
+                  "ResourceRecords": [ { "Value": "${IP}" } ]
+                }
+              }
+            ]
+          }
+          EOF
 
           aws route53 change-resource-record-sets --hosted-zone-id "$HOSTED_ZONE_ID" --change-batch file://change-batch.json
           aws route53 list-resource-record-sets --hosted-zone-id "$HOSTED_ZONE_ID" --query "ResourceRecordSets[?Name=='${DOMAIN}.']" --output json

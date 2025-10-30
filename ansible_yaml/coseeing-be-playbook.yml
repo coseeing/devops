@@ -11,7 +11,7 @@
     webroot_path: '/var/www/html'  # the root path of your site
     certbot_source_directory: /usr/local/certbot-src
     certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
-    domain: api.coseeing.org
+    domain: "{{ deploy_domain }}"
     traefik_certresolver: coseeing-api
     traefik_router_prefix: coseeing-api-service--
     email: tsengwoody@coseeing.org
