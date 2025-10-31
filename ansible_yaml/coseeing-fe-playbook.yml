@@ -32,7 +32,7 @@
           version: "3.7"
           services:
             coseeing-web:
-              container_name: coseeing-web
+              container_name: "coseeing-web{{ project_postfix }}"
               image: {{ image_name }}
               restart: always
               deploy:

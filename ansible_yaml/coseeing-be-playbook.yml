@@ -50,7 +50,7 @@
         content: |
           services:
             coseeing-server:
-              container_name: coseeing-server
+              container_name: "coseeing-server{{ project_postfix }}"
               image: {{ image_name }}
               restart: always
               volumes:

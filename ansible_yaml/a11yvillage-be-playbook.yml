@@ -49,7 +49,7 @@
         content: |
           services:
             a11yvillage-server:
-              container_name: a11yvillage-server
+              container_name: "a11yvillage-server{{ project_postfix }}"
               image: {{ image_name }}
               restart: always
               volumes:

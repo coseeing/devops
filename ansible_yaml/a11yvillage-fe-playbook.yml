@@ -32,7 +32,7 @@
           version: "3.7"
           services:
             a11yvillage-web:
-              container_name: a11yvillage-web
+              container_name: "a11yvillage-web{{ project_postfix }}"
               image: {{ image_name }}
               restart: always
               deploy:
