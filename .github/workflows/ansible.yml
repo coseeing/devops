@@ -3,11 +3,13 @@ name: Run Ansible
 on:
   workflow_dispatch:
     inputs:
-      deployTag:
-        description: "tag to deploy"
-        default: "latest"
+      deploy_site:
+        description: "deploy to which environment"
         required: true
-        type: string
+        type: choice
+        options:
+          - prod
+          - dev
       stack_name:
         description: "stack name"
         required: true
@@ -103,24 +105,12 @@ jobs:
       - name: Set deploy domain
         id: set_domain
         run: |
-          case "${{ github.event.inputs.deploy_type }}" in
-            a11yvillage-be)
-              DOMAIN="api.a11yvillage.coseeing.org"
-              ;;
-            a11yvillage-fe)
-              DOMAIN="a11yvillage.coseeing.org"
-              ;;
-            coseeing-fe)
-              DOMAIN="coseeing.org"
-              ;;
-            coseeing-be)
-              DOMAIN="api.coseeing.org"
-              ;;
-            *)
-              echo "Unknown deploy_type: ${{ github.event.inputs.deploy_type }}"
-              exit 1
-              ;;
-          esac
+          DOMAIN=$(jq -r --arg type "${{ github.event.inputs.deploy_type }}" --arg site "${{ github.event.inputs.deploy_site }}" '.[$type][$site].domain' .github/workflows/config/domain.json)
+          
+          if [ "$DOMAIN" = "null" ]; then
+            echo "Error: Unknown deploy_type: ${{ github.event.inputs.deploy_type }} or deploy_site: ${{ github.event.inputs.deploy_site }}"
+            exit 1
+          fi
 
           echo "deploy_domain=$DOMAIN" >> $GITHUB_OUTPUT
           echo "Using deploy_domain: $DOMAIN"
@@ -169,8 +159,14 @@ jobs:
           DOMAIN="${{ steps.set_domain.outputs.deploy_domain }}"
           echo "Using domain: $DOMAIN"
 
+          # Set deploy tag based on deploy_site
+          DEPLOY_TAG="latest"
+          if [ "${{ github.event.inputs.deploy_site }}" = "dev" ]; then
+            DEPLOY_TAG="dev"
+          fi
+
           ansible-playbook -i inventory \
-            -e "deploy_tag=${{ github.event.inputs.deployTag }}" \
+            -e "deploy_tag=$DEPLOY_TAG" \
             -e "server_ip=${{ steps.get_ip.outputs.IP }}" \
             -e "deploy_domain=$DOMAIN" \
             ansible_yaml/${{ github.event.inputs.deploy_type }}-playbook.yml
