@@ -139,7 +139,7 @@ jobs:
                 "ResourceRecordSet": {
                   "Name": "${DOMAIN}",
                   "Type": "A",
-                  "TTL": 60,
+                  "TTL": 300,
                   "ResourceRecords": [ { "Value": "${IP}" } ]
                 }
               }
