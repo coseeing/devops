@@ -2,62 +2,21 @@
   hosts: all
   become: true
   become_user: root
+  vars_files:
+    - common/vars.yml
   vars:
-    deploy_tag: ${{ github.event.inputs.deployTag }}
-    server_ip: ${{ steps.get_ip.outputs.IP }}
     docker_compose_dir: /data/a11yvillage-server
     secret_name: prod/rdsuser/a11yvillage
-    secret_region: ap-northeast-1
-    webroot_path: '/var/www/html'  # the root path of your site
-    certbot_source_directory: /usr/local/certbot-src
-    certbot_executable_path: "{{ certbot_source_directory }}/venv/bin/certbot"
-    domain: "{{ deploy_domain }}"
     traefik_certresolver: a11yvillage-api
     traefik_router_prefix: a11yvillage-api-service--
-    email: tsengwoody@coseeing.org
-    ecr_location: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
     image_name: "{{ ecr_location }}/a11yvillage-be:{{ deploy_tag }}"
-    traefik_path: /data/entry/entry
+    project_name: a11yvillage-be
   collections:
     - community.docker
     - community.aws
   tasks:
-
-    - name: Set ansible_python_interpreter to use the installed Python
-      set_fact:
-        ansible_python_interpreter: /usr/bin/python3
-
-    - name: Update apt repo and cache on all Debian/Ubuntu boxes
-      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
-      become: true
-
-    - name: Upgrade all apt packages
-      apt: upgrade=yes force_apt_get=yes
-      become: true
-
-    - name: Install Python pip
-      apt: name={{ item }} update_cache=true state=present force_apt_get=yes
-      with_items:
-        - python3-pip
-      become: true
-
-    - name: Install Python packages using apt
-      apt:
-        name:
-          - python3-docker
-          - python3-boto3
-          - python3-botocore
-          - python3-venv
-          - gcc
-          - libaugeas0
-          - libssl-dev
-          - libffi-dev
-          - ca-certificates
-          - openssl
-          - git
-        state: present
-        update_cache: yes
-      become: true
+    - name: Include pre-common tasks
+      include_tasks: common/pre-common.yml
 
     - name: Get info from AWS secret manager
       set_fact:
@@ -71,31 +30,6 @@
         MARIADB_HOST: "{{ secret_data.host }}"
         MARIADB_PORT: "{{ secret_data.port }}"
         MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
-
-    - name: Ensure docker compose directory exists
-      file:
-        path: "{{ docker_compose_dir }}"
-        state: directory
-        mode: '0755'
-      become: true
-
-    - name: Ensure docker compose directory exists
-      file:
-        path: "{{ docker_compose_dir }}/data"
-        state: directory
-        mode: '0755'
-      become: true
-
-    - name: Load Traefik source config (a11yvillage-be)
-      set_fact:
-        traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/a11yvillage-be.yml') | from_yaml }}"
-
-    - name: Transform Traefik config (placeholders -> prefix -> labels)
-      set_fact:
-        traefik_labels_list: "{{ (traefik_source_config
-          | replace_placeholders(domain, traefik_certresolver)
-          | apply_prefix(traefik_router_prefix)
-          ) | flatten_to_labels }}"
 
     - name: Create .env file
       copy:
@@ -146,99 +80,5 @@
               driver: bridge
               name: entry
 
-    - name: Ensure Traefik config directory exists
-      file:
-        path: "{{ traefik_path }}"
-        state: directory
-        mode: '0755'
-      become: true
-
-    - name: Check if Traefik config exists
-      stat:
-        path: "{{ traefik_path }}/traefik.yml"
-      register: traefik_file
-
-    - name: Load Traefik config when present
-      slurp:
-        src: "{{ traefik_path }}/traefik.yml"
-      register: traefik_slurp
-      when: traefik_file.stat.exists
-
-    - name: Initialize Traefik config fact
-      set_fact:
-        traefik_config: "{{ (traefik_slurp.content | b64decode | from_yaml) if traefik_file.stat.exists else {} }}"
-
-    - name: Ensure certificatesResolvers map exists
-      set_fact:
-        traefik_config: "{{ traefik_config | combine({'certificatesResolvers': (traefik_config.certificatesResolvers | default({}))}, recursive=True) }}"
-
-    - name: Ensure resolver block exists in Traefik config
-      set_fact:
-        traefik_config: "{{ traefik_config | combine({'certificatesResolvers': { (traefik_certresolver): { 'acme': { 'tlsChallenge': {}, 'email': email, 'storage': '/letsencrypt/' + traefik_certresolver + '.json' } }}}, recursive=True) }}"
-      when: traefik_certresolver not in (traefik_config.certificatesResolvers | default({}))
-
-    - name: Write back Traefik config
-      copy:
-        dest: "{{ traefik_path }}/traefik.yml"
-        content: "{{ traefik_config | to_nice_yaml }}"
-        mode: '0644'
-      become: true
-      register: traefik_write_result
-
-    - name: Update the repository cache and update package "unzip" to latest version using default
-      apt:
-        name: unzip
-        state: latest
-        update_cache: yes
-
-    - name: Install AWS CLI v2
-      shell: |
-        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
-        unzip /tmp/awscliv2.zip -d /tmp
-        sudo /tmp/aws/install
-        rm -f /tmp/awscliv2.zip
-        rm -rf /tmp/aws
-      args:
-        creates: /usr/local/bin/aws
-
-    - name: Login ECR using AWS CLI
-      shell: |
-        aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin {{ ecr_location }}
-      register: ecr_login
-      no_log: false
-
-    - name: Check if image exists
-      docker_image_info:
-        name: "{{ image_name }}"
-      register: image_info
-
-    - name: Untag existing image if it exists
-      docker_image:
-        name: "{{ image_name }}"
-        state: absent
-        force_absent: true
-      when: image_info.images | length > 0
-
-    - name: Run
-      docker_compose_v2:
-        project_src: "{{ docker_compose_dir }}"
-        state: present
-      register: compose_result
-
-    - name: Show compose_result Detail info
-      debug:
-        var: compose_result
-
-    - name: Restart traefik service
-      docker_compose_v2:
-        project_src: "{{ traefik_path }}"
-        state: restarted
-        services:
-          - traefik
-      register: traefik_result
-      when: traefik_write_result.changed
-
-    - name: Show traefik_result Detail info
-      debug:
-        var: traefik_result
-      when: traefik_write_result.changed
+    - name: Include post-common tasks
+      include_tasks: common/post-common.yml
