@@ -5,10 +5,10 @@
   vars_files:
     - common/vars.yml
   vars:
-    docker_compose_dir: /data/coseeing-web
+    docker_compose_dir: "/data/coseeing-web{{ project_postfix }}"
     secret_name: prod/rdsuser/coseeing
-    traefik_certresolver: coseeing-web
-    traefik_router_prefix: coseeing-web-service--
+    traefik_certresolver: "coseeing-web{{ project_postfix }}"
+    traefik_router_prefix: "coseeing-web-service{{ project_postfix }}--"
     image_name: "{{ ecr_location }}/coseeing-fe:{{ deploy_tag }}"
     project_name: coseeing-fe
   collections:

@@ -165,8 +165,14 @@ jobs:
             DEPLOY_TAG="dev"
           fi
 
+          POSTFIX=""
+          if [ "${{ github.event.inputs.deploy_site }}" = "dev" ]; then
+            POSTFIX="-dev"
+          fi
+
           ansible-playbook -i inventory \
             -e "deploy_tag=$DEPLOY_TAG" \
             -e "server_ip=${{ steps.get_ip.outputs.IP }}" \
             -e "deploy_domain=$DOMAIN" \
+            -e "project_postfix=$POSTFIX" \
             ansible_yaml/${{ github.event.inputs.deploy_type }}-playbook.yml

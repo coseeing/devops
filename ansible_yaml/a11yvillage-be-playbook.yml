@@ -5,10 +5,10 @@
   vars_files:
     - common/vars.yml
   vars:
-    docker_compose_dir: /data/a11yvillage-server
+    docker_compose_dir: "/data/a11yvillage-server{{ project_postfix }}"
     secret_name: prod/rdsuser/a11yvillage
-    traefik_certresolver: a11yvillage-api
-    traefik_router_prefix: a11yvillage-api-service--
+    traefik_certresolver: "a11yvillage-api{{ project_postfix }}"
+    traefik_router_prefix: "a11yvillage-api-service{{ project_postfix }}--"
     image_name: "{{ ecr_location }}/a11yvillage-be:{{ deploy_tag }}"
     project_name: a11yvillage-be
   collections:
