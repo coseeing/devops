@@ -12,7 +12,7 @@
       "domain": "a11yvillage.coseeing.org"
     },
     "dev": {
-      "domain": "accessibility.dev.coseeing.org"
+      "domain": "a11yvillage.dev.coseeing.org"
     }
   },
   "coseeing-fe": {
