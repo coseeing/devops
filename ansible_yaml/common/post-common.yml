@@ -1,0 +1,96 @@
+- name: Ensure Traefik config directory exists
+  file:
+    path: "{{ traefik_path }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Check if Traefik config exists
+  stat:
+    path: "{{ traefik_path }}/traefik.yml"
+  register: traefik_file
+
+- name: Load Traefik config when present
+  slurp:
+    src: "{{ traefik_path }}/traefik.yml"
+  register: traefik_slurp
+  when: traefik_file.stat.exists
+
+- name: Initialize Traefik config fact
+  set_fact:
+    traefik_config: "{{ (traefik_slurp.content | b64decode | from_yaml) if traefik_file.stat.exists else {} }}"
+
+- name: Ensure certificatesResolvers map exists
+  set_fact:
+    traefik_config: "{{ traefik_config | combine({'certificatesResolvers': (traefik_config.certificatesResolvers | default({}))}, recursive=True) }}"
+
+- name: Ensure resolver block exists in Traefik config
+  set_fact:
+    traefik_config: "{{ traefik_config | combine({'certificatesResolvers': { (traefik_certresolver): { 'acme': { 'tlsChallenge': {}, 'email': email, 'storage': '/letsencrypt/' + traefik_certresolver + '.json' } }}}, recursive=True) }}"
+  when: traefik_certresolver not in (traefik_config.certificatesResolvers | default({}))
+
+- name: Write back Traefik config
+  copy:
+    dest: "{{ traefik_path }}/traefik.yml"
+    content: "{{ traefik_config | to_nice_yaml }}"
+    mode: '0644'
+  become: true
+  register: traefik_write_result
+
+- name: Update the repository cache and update package "unzip" to latest version using default
+  apt:
+    name: unzip
+    state: latest
+    update_cache: yes
+
+- name: Install AWS CLI v2
+  shell: |
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+    unzip /tmp/awscliv2.zip -d /tmp
+    sudo /tmp/aws/install
+    rm -f /tmp/awscliv2.zip
+    rm -rf /tmp/aws
+  args:
+    creates: /usr/local/bin/aws
+
+- name: Login ECR using AWS CLI
+  shell: |
+    aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin {{ ecr_location }}
+  register: ecr_login
+  no_log: false
+
+- name: Check if image exists
+  docker_image_info:
+    name: "{{ image_name }}"
+  register: image_info
+
+- name: Untag existing image if it exists
+  docker_image:
+    name: "{{ image_name }}"
+    state: absent
+    force_absent: true
+  when: image_info.images | length > 0
+
+- name: Run
+  docker_compose_v2:
+    project_src: "{{ docker_compose_dir }}"
+    state: present
+  register: compose_result
+
+- name: Show compose_result Detail info
+  debug:
+    var: compose_result
+
+- name: Restart traefik service
+  docker_compose_v2:
+    project_src: "{{ traefik_path }}"
+    state: restarted
+    services:
+      - traefik
+  register: traefik_result
+  when: traefik_write_result.changed
+
+- name: Show traefik_result Detail info
+  debug:
+    var: traefik_result
+  when: traefik_write_result.changed

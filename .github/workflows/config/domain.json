@@ -1,0 +1,34 @@
+{
+  "a11yvillage-be": {
+    "prod": {
+      "domain": "api.a11yvillage.coseeing.org"
+    },
+    "dev": {
+      "domain": "api.a11yvillage.dev.coseeing.org"
+    }
+  },
+  "a11yvillage-fe": {
+    "prod": {
+      "domain": "a11yvillage.coseeing.org"
+    },
+    "dev": {
+      "domain": "a11yvillage.dev.coseeing.org"
+    }
+  },
+  "coseeing-fe": {
+    "prod": {
+      "domain": "coseeing.org"
+    },
+    "dev": {
+      "domain": "dev.coseeing.org"
+    }
+  },
+  "coseeing-be": {
+    "prod": {
+      "domain": "api.coseeing.org"
+    },
+    "dev": {
+      "domain": "api.dev.coseeing.org"
+    }
+  }
+}

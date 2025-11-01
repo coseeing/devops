@@ -1,0 +1,60 @@
+- name: Set ansible_python_interpreter to use the installed Python
+  set_fact:
+    ansible_python_interpreter: /usr/bin/python3
+
+- name: Update apt repo and cache on all Debian/Ubuntu boxes
+  apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+  become: true
+
+- name: Upgrade all apt packages
+  apt: upgrade=yes force_apt_get=yes
+  become: true
+
+- name: Install Python pip
+  apt: name={{ item }} update_cache=true state=present force_apt_get=yes
+  with_items:
+    - python3-pip
+  become: true
+
+- name: Install Python packages using apt
+  apt:
+    name:
+      - python3-docker
+      - python3-boto3
+      - python3-botocore
+      - python3-venv
+      - gcc
+      - libaugeas0
+      - libssl-dev
+      - libffi-dev
+      - ca-certificates
+      - openssl
+      - git
+    state: present
+    update_cache: yes
+  become: true
+
+- name: Load Traefik source config
+  set_fact:
+    traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/{{ project_name }}.yml') | from_yaml }}"
+
+- name: Transform Traefik config (placeholders -> prefix -> labels)
+  set_fact:
+    traefik_labels_list: "{{ (traefik_source_config
+      | replace_placeholders(domain, traefik_certresolver)
+      | apply_prefix(traefik_router_prefix)
+      ) | flatten_to_labels }}"
+
+- name: Ensure docker compose directory exists
+  file:
+    path: "{{ docker_compose_dir }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Ensure docker compose directory exists
+  file:
+    path: "{{ docker_compose_dir }}/data"
+    state: directory
+    mode: '0755'
+  become: true
