@@ -22,7 +22,11 @@
       copy:
         dest: "{{ docker_compose_dir }}/.env"
         content: |
+          {% if project_postfix == "-dev" %}
+          NEXT_PUBLIC_BASE_URL=https://api.dev.coseeing.org/about/api
+          {% else %}
           NEXT_PUBLIC_BASE_URL=https://api.coseeing.org/about/api
+          {% endif %}
           NEXT_PUBLIC_GOOGLE_TAG_MANAGER_ID=GTM-NQQ79V67
 
     - name: Copy docker-compose.yml Document
