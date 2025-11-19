@@ -19,10 +19,10 @@ on:
         required: true
         type: choice
         options:
-          - a11yvillage-be
-          - a11yvillage-fe
-          - coseeing-fe
-          - coseeing-be
+          - a11yvillage-server
+          - a11yvillage-web
+          - coseeing-web
+          - coseeing-server
 
 jobs:
   deploy:
