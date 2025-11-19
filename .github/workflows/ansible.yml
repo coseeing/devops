@@ -19,8 +19,8 @@ on:
         required: true
         type: choice
         options:
-          - a11yvillage-server
           - a11yvillage-web
+          - a11yvillage-server
           - coseeing-web
           - coseeing-server
 
