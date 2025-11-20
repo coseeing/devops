@@ -53,76 +53,76 @@
         state: present
         update_cache: yes
 
-    - name: Remove old Docker packages that may conflict
-      apt:
-        name:
-          - docker
-          - docker-engine
-          - docker.io
-          - containerd
-          - runc
-        state: absent
-        purge: yes
-        autoremove: yes
+    # - name: Remove old Docker packages that may conflict
+    #   apt:
+    #     name:
+    #       - docker
+    #       - docker-engine
+    #       - docker.io
+    #       - containerd
+    #       - runc
+    #     state: absent
+    #     purge: yes
+    #     autoremove: yes
 
-    - name: Attempt to fix broken deps (apt-get -f install)
-      shell: apt-get -f install -y
-      register: apt_fix
-      changed_when: apt_fix.rc == 0 and ('is already the newest version' not in apt_fix.stdout)
+    # - name: Attempt to fix broken deps (apt-get -f install)
+    #   shell: apt-get -f install -y
+    #   register: apt_fix
+    #   changed_when: apt_fix.rc == 0 and ('is already the newest version' not in apt_fix.stdout)
 
-    - name: Ensure prerequisites for apt over HTTPS are present
-      apt:
-        name:
-          - apt-transport-https
-          - ca-certificates
-          - curl
-          - gnupg
-          - lsb-release
-        state: present
-        update_cache: yes
+    # - name: Ensure prerequisites for apt over HTTPS are present
+    #   apt:
+    #     name:
+    #       - apt-transport-https
+    #       - ca-certificates
+    #       - curl
+    #       - gnupg
+    #       - lsb-release
+    #     state: present
+    #     update_cache: yes
 
-    - name: Add Docker GPG key
-      ansible.builtin.apt_key:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        state: present
+    # - name: Add Docker GPG key
+    #   ansible.builtin.apt_key:
+    #     url: https://download.docker.com/linux/ubuntu/gpg
+    #     state: present
 
-    - name: Add Docker apt repository
-      ansible.builtin.apt_repository:
-        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
-        state: present
-        filename: docker
+    # - name: Add Docker apt repository
+    #   ansible.builtin.apt_repository:
+    #     repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+    #     state: present
+    #     filename: docker
 
-    - name: Update apt cache after adding docker repo
-      apt: update_cache=yes cache_valid_time=3600
+    # - name: Update apt cache after adding docker repo
+    #   apt: update_cache=yes cache_valid_time=3600
 
-    - name: Install Docker Engine and Compose plugin from Docker repo
-      apt:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-buildx-plugin
-          - docker-compose-plugin
-        state: present
-        update_cache: yes
+    # - name: Install Docker Engine and Compose plugin from Docker repo
+    #   apt:
+    #     name:
+    #       - docker-ce
+    #       - docker-ce-cli
+    #       - containerd.io
+    #       - docker-buildx-plugin
+    #       - docker-compose-plugin
+    #     state: present
+    #     update_cache: yes
 
-    - name: Ensure containerd is started and enabled
-      service:
-        name: containerd
-        state: started
-        enabled: yes
+    # - name: Ensure containerd is started and enabled
+    #   service:
+    #     name: containerd
+    #     state: started
+    #     enabled: yes
 
-    - name: Ensure docker is started and enabled
-      service:
-        name: docker
-        state: started
-        enabled: yes
+    # - name: Ensure docker is started and enabled
+    #   service:
+    #     name: docker
+    #     state: started
+    #     enabled: yes
 
-    - name: Verify docker is running
-      shell: docker --version
-      register: docker_version
-      failed_when: docker_version.rc != 0
-      changed_when: false
+    # - name: Verify docker is running
+    #   shell: docker --version
+    #   register: docker_version
+    #   failed_when: docker_version.rc != 0
+    #   changed_when: false
   become: true
   when: "(docker_bin.rc != 0) or (not compose_present)"
 
