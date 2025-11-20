@@ -2,6 +2,130 @@
   set_fact:
     ansible_python_interpreter: /usr/bin/python3
 
+- name: Check if docker binary exists
+  shell: "command -v docker"
+  register: docker_bin
+  ignore_errors: true
+  changed_when: false
+
+- name: Check if docker-compose binary exists
+  shell: "command -v docker-compose"
+  register: docker_compose_bin
+  ignore_errors: true
+  changed_when: false
+
+- name: Check if docker compose plugin is available
+  shell: "docker compose version"
+  register: docker_compose_plugin
+  ignore_errors: true
+  changed_when: false
+
+- name: Set compose_present fact
+  set_fact:
+    compose_present: "{{ (docker_compose_bin.rc == 0) or (docker_compose_plugin.rc == 0) }}"
+
+- block:
+    - name: Update apt repo and cache on all Debian/Ubuntu boxes
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+    - name: Upgrade all apt packages
+      apt: upgrade=yes force_apt_get=yes
+
+    - name: Install Python pip
+      apt: name={{ item }} update_cache=true state=present force_apt_get=yes
+      with_items:
+        - python3-pip
+
+    - name: Install Python packages using apt
+      apt:
+        name:
+          - python3-docker
+          - python3-boto3
+          - python3-botocore
+          - python3-venv
+          - gcc
+          - libaugeas0
+          - libssl-dev
+          - libffi-dev
+          - ca-certificates
+          - openssl
+          - git
+        state: present
+        update_cache: yes
+
+    - name: Remove old Docker packages that may conflict
+      apt:
+        name:
+          - docker
+          - docker-engine
+          - docker.io
+          - containerd
+          - runc
+        state: absent
+        purge: yes
+        autoremove: yes
+
+    - name: Attempt to fix broken deps (apt-get -f install)
+      shell: apt-get -f install -y
+      register: apt_fix
+      changed_when: apt_fix.rc == 0 and ('is already the newest version' not in apt_fix.stdout)
+
+    - name: Ensure prerequisites for apt over HTTPS are present
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+        state: present
+        filename: docker
+
+    - name: Update apt cache after adding docker repo
+      apt: update_cache=yes cache_valid_time=3600
+
+    - name: Install Docker Engine and Compose plugin from Docker repo
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Ensure containerd is started and enabled
+      service:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Ensure docker is started and enabled
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Verify docker is running
+      shell: docker --version
+      register: docker_version
+      failed_when: docker_version.rc != 0
+      changed_when: false
+  become: true
+  when: "(docker_bin.rc != 0) or (not compose_present)"
+
 - name: Load Traefik source config
   set_fact:
     traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/{{ project_name }}.yml') | from_yaml }}"

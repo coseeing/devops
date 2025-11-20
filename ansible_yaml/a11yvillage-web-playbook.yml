@@ -5,12 +5,12 @@
   vars_files:
     - common/vars.yml
   vars:
-    docker_compose_dir: "/data/coseeing-web{{ project_postfix }}"
-    secret_name: prod/rdsuser/coseeing
-    traefik_certresolver: "coseeing-web{{ project_postfix }}"
-    traefik_router_prefix: "coseeing-web-service{{ project_postfix }}--"
-    image_name: "{{ ecr_location }}/coseeing-fe:{{ deploy_tag }}"
-    project_name: coseeing-fe
+    docker_compose_dir: "/data/a11yvillage-web{{ project_postfix }}"
+    secret_name: prod/rdsuser/a11yvillage
+    traefik_certresolver: "a11yvillage-web{{ project_postfix }}"
+    traefik_router_prefix: "a11yvillage-web-service{{ project_postfix }}--"
+    image_name: "{{ ecr_location }}/a11yvillage-fe:{{ deploy_tag }}"
+    project_name: a11yvillage-web
   collections:
     - community.docker
     - community.aws
@@ -23,11 +23,11 @@
         dest: "{{ docker_compose_dir }}/.env"
         content: |
           {% if project_postfix == "-dev" %}
-          NEXT_PUBLIC_BASE_URL=https://api.dev.coseeing.org/about/api
+          NEXT_PUBLIC_BASE_URL=https://api.a11yvillage.dev.coseeing.org/blog/api
           {% else %}
-          NEXT_PUBLIC_BASE_URL=https://api.coseeing.org/about/api
+          NEXT_PUBLIC_API_URL=https://api.a11yvillage.coseeing.org/
           {% endif %}
-          NEXT_PUBLIC_GOOGLE_TAG_MANAGER_ID=GTM-NQQ79V67
+          NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
 
     - name: Copy docker-compose.yml Document
       copy:
@@ -35,8 +35,8 @@
         content: |
           version: "3.7"
           services:
-            coseeing-web:
-              container_name: "coseeing-web{{ project_postfix }}"
+            a11yvillage-web:
+              container_name: "a11yvillage-web{{ project_postfix }}"
               image: {{ image_name }}
               restart: always
               deploy:

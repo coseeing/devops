@@ -1,5 +1,5 @@
 {
-  "a11yvillage-be": {
+  "a11yvillage-server": {
     "prod": {
       "domain": "api.a11yvillage.coseeing.org"
     },
@@ -7,7 +7,7 @@
       "domain": "api.a11yvillage.dev.coseeing.org"
     }
   },
-  "a11yvillage-fe": {
+  "a11yvillage-web": {
     "prod": {
       "domain": "a11yvillage.coseeing.org"
     },
@@ -15,7 +15,7 @@
       "domain": "a11yvillage.dev.coseeing.org"
     }
   },
-  "coseeing-fe": {
+  "coseeing-web": {
     "prod": {
       "domain": "coseeing.org"
     },
@@ -23,7 +23,7 @@
       "domain": "dev.coseeing.org"
     }
   },
-  "coseeing-be": {
+  "coseeing-server": {
     "prod": {
       "domain": "api.coseeing.org"
     },
