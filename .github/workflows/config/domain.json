@@ -1,10 +1,10 @@
 {
   "a11yvillage-server": {
     "prod": {
-      "domain": "api.a11yvillage.coseeing.org"
+      "domain": "api-a11yvillage.coseeing.org"
     },
     "dev": {
-      "domain": "api.a11yvillage.dev.coseeing.org"
+      "domain": "api-a11yvillage.dev.coseeing.org"
     }
   },
   "a11yvillage-web": {
