@@ -9,7 +9,7 @@
     secret_name: prod/rdsuser/coseeing
     traefik_certresolver: "coseeing-server{{ project_postfix }}"
     traefik_router_prefix: "coseeing-server-service{{ project_postfix }}--"
-    image_name: "{{ ecr_location }}/coseeing-be:{{ deploy_tag }}"
+    image_name: "{{ ecr_location }}/coseeing-server:{{ deploy_tag }}"
     project_name: coseeing-server
   collections:
     - community.docker

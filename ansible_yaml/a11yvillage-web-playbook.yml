@@ -9,7 +9,7 @@
     secret_name: prod/rdsuser/a11yvillage
     traefik_certresolver: "a11yvillage-web{{ project_postfix }}"
     traefik_router_prefix: "a11yvillage-web-service{{ project_postfix }}--"
-    image_name: "{{ ecr_location }}/a11yvillage-fe:{{ deploy_tag }}"
+    image_name: "{{ ecr_location }}/a11yvillage-web:{{ deploy_tag }}"
     project_name: a11yvillage-web
   collections:
     - community.docker
