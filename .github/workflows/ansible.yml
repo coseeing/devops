@@ -50,7 +50,7 @@ jobs:
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install dependencies in virtual environment
         run: |
@@ -106,7 +106,7 @@ jobs:
         id: set_domain
         run: |
           DOMAIN=$(jq -r --arg type "${{ github.event.inputs.deploy_type }}" --arg site "${{ github.event.inputs.deploy_site }}" '.[$type][$site].domain' .github/workflows/config/domain.json)
-          
+
           if [ "$DOMAIN" = "null" ]; then
             echo "Error: Unknown deploy_type: ${{ github.event.inputs.deploy_type }} or deploy_site: ${{ github.event.inputs.deploy_site }}"
             exit 1
@@ -117,7 +117,7 @@ jobs:
 
       - name: Run Ansible Playbook
         env:
-          ANSIBLE_HOST_KEY_CHECKING: 'False'
+          ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           source venv/bin/activate
 
@@ -125,7 +125,7 @@ jobs:
           echo "Using domain: $DOMAIN"
 
           # Set deploy tag based on deploy_site
-          DEPLOY_TAG="latest"
+          DEPLOY_TAG="prod"
           if [ "${{ github.event.inputs.deploy_site }}" = "dev" ]; then
             DEPLOY_TAG="dev"
           fi

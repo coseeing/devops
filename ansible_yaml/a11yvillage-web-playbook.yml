@@ -23,11 +23,14 @@
         dest: "{{ docker_compose_dir }}/.env"
         content: |
           {% if project_postfix == "-dev" %}
-          NEXT_PUBLIC_BASE_URL=https://api-a11yvillage.dev.coseeing.org/blog/api
+          NEXT_PUBLIC_BASE_URL=https://a11yvillage-dev.coseeing.org
+          NEXT_PUBLIC_BASE_API_URL=https://api.a11yvillage.dev.coseeing.org
+          NEXT_PUBLIC_BASE_STORAGE_URL=https://storage.a11yvillage.dev.coseeing.org
           {% else %}
-          NEXT_PUBLIC_API_URL=https://api-a11yvillage.coseeing.org/
+          NEXT_PUBLIC_BASE_URL=https://a11yvillage.coseeing.org
+          NEXT_PUBLIC_BASE_API_URL=https://api.a11yvillage.coseeing.org
+          NEXT_PUBLIC_BASE_STORAGE_URL=https://storage.a11yvillage.coseeing.org
           {% endif %}
-          NEXT_PUBLIC_RESOURCE_URL=https://a11yvillage.s3.ap-northeast-1.amazonaws.com/
 
     - name: Copy docker-compose.yml Document
       copy:
