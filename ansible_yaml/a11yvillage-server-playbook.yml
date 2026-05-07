@@ -42,6 +42,15 @@
           MARIADB_PORT={{ MARIADB_PORT }}
           MARIADB_DATABASE={{ MARIADB_DATABASE }}
           ALLOWED_HOSTS=*
+          {% if project_postfix == "-dev" %}
+          UI_HOST=https://a11yvillage-dev.coseeing.org
+          API_HOST=https://api-a11yvillage-dev.coseeing.org
+          STORAGE_HOST=https://storage.a11yvillage.dev.coseeing.org
+          {% else %}
+          UI_HOST=https://a11yvillage.coseeing.org
+          API_HOST=https://api-a11yvillage.coseeing.org
+          STORAGE_HOST=https://storage.a11yvillage.coseeing.org
+          {% endif %}
 
     - name: Copy docker-compose.yml Document
       copy:
