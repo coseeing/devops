@@ -23,9 +23,9 @@
         dest: "{{ docker_compose_dir }}/.env"
         content: |
           {% if project_postfix == "-dev" %}
-          NEXT_PUBLIC_BASE_URL=https://api.dev.coseeing.org/about/api
+          NEXT_PUBLIC_BASE_API_URL=https://api-dev.coseeing.org
           {% else %}
-          NEXT_PUBLIC_BASE_URL=https://api.coseeing.org/about/api
+          NEXT_PUBLIC_BASE_API_URL=https://api.coseeing.org
           {% endif %}
           NEXT_PUBLIC_GOOGLE_TAG_MANAGER_ID=GTM-NQQ79V67
 
@@ -33,7 +33,6 @@
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
         content: |
-          version: "3.7"
           services:
             coseeing-web:
               container_name: "coseeing-web{{ project_postfix }}"

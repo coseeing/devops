@@ -36,7 +36,6 @@
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
         content: |
-          version: "3.7"
           services:
             a11yvillage-web:
               container_name: "a11yvillage-web{{ project_postfix }}"
