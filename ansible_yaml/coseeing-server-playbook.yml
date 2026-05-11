@@ -42,7 +42,15 @@
           MARIADB_PORT={{ MARIADB_PORT }}
           MARIADB_DATABASE={{ MARIADB_DATABASE }}
           ALLOWED_HOSTS=*
-          HOST=https://coseeing.org
+          {% if project_postfix == "-dev" %}
+          UI_HOST=https://dev.coseeing.org
+          API_HOST=https://api-dev.coseeing.org
+          STORAGE_HOST=https://storage.dev.coseeing.org
+          {% else %}
+          UI_HOST=https://coseeing.org
+          API_HOST=https://api.coseeing.org
+          STORAGE_HOST=https://storage.coseeing.org
+          {% endif %}
 
     - name: Copy docker-compose.yml Document
       copy:
