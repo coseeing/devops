@@ -14,6 +14,7 @@ on:
         description: "stack name"
         required: true
         type: string
+        default: "coseeing-stack-v2"
       deploy_type:
         description: "deployment type"
         required: true
