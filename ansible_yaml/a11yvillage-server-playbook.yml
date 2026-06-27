@@ -30,6 +30,7 @@
         MARIADB_HOST: "{{ secret_data.host }}"
         MARIADB_PORT: "{{ secret_data.port }}"
         MARIADB_DATABASE: "{{ secret_data.MARIADB_DATABASE }}"
+        OATHKEEPER_SHARED_SECRET: "{{ secret_data.OATHKEEPER_SHARED_SECRET | default(secret_data.SECRET_KEY) }}"
 
     - name: Create .env file
       copy:
@@ -41,6 +42,7 @@
           MARIADB_HOST={{ MARIADB_HOST }}
           MARIADB_PORT={{ MARIADB_PORT }}
           MARIADB_DATABASE={{ MARIADB_DATABASE }}
+          OATHKEEPER_SHARED_SECRET={{ OATHKEEPER_SHARED_SECRET }}
           ALLOWED_HOSTS=*
           {% if project_postfix == "-dev" %}
           UI_HOST=https://a11yvillage-dev.coseeing.org
@@ -52,11 +54,119 @@
           STORAGE_HOST=https://storage.a11yvillage.coseeing.org
           {% endif %}
 
+    - name: Ensure Oathkeeper access rules directory exists
+      file:
+        path: "{{ docker_compose_dir }}/oathkeeper/access-rules"
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Copy Oathkeeper config
+      copy:
+        dest: "{{ docker_compose_dir }}/oathkeeper/config.yml"
+        mode: '0644'
+        content: |
+          log:
+            level: debug
+
+          serve:
+            proxy:
+              host: 0.0.0.0
+              port: 4455
+            api:
+              host: 0.0.0.0
+              port: 4456
+
+          access_rules:
+            repositories:
+              - file:///etc/oathkeeper/access-rules/a11yvillage.yml
+
+          authenticators:
+            noop:
+              enabled: true
+            anonymous:
+              enabled: true
+              config:
+                subject: anonymous
+            jwt:
+              enabled: true
+              config:
+                jwks_urls:
+                  - https://sso.coseeing.org/.well-known/jwks.json
+                trusted_issuers:
+                  - https://sso.coseeing.org
+                allowed_algorithms:
+                  - RS256
+                token_from:
+                  header: Authorization
+
+          authorizers:
+            allow:
+              enabled: true
+
+          mutators:
+            noop:
+              enabled: true
+            header:
+              enabled: true
+              config:
+                headers:
+          {% raw %}
+                  X-Auth-Subject: "{{ .Subject }}"
+                  X-Auth-Email: "{{ .Extra.email }}"
+          {% endraw %}
+                  X-From-Oathkeeper: ""
+
+    - name: Copy Oathkeeper access rules
+      copy:
+        dest: "{{ docker_compose_dir }}/oathkeeper/access-rules/a11yvillage.yml"
+        mode: '0644'
+        content: |
+          -
+            id: api-normalized-identity
+            description: All API requests receive normalized identity; Django enforces authorization
+            match:
+              url: <https|http>://<.*>/<.*>
+              methods:
+                - GET
+                - HEAD
+                - OPTIONS
+                - POST
+                - PUT
+                - PATCH
+                - DELETE
+            upstream:
+              preserve_host: true
+              url: http://a11yvillage-server{{ project_postfix }}:8000
+            authenticators:
+              - handler: jwt
+              - handler: anonymous
+            authorizer:
+              handler: allow
+            mutators:
+              - handler: header
+
     - name: Copy docker-compose.yml Document
       copy:
         dest: "{{ docker_compose_dir }}/docker-compose.yml"
         content: |
           services:
+            a11yvillage-oathkeeper:
+              image: oryd/oathkeeper:v25.4.0
+              command: serve --config /etc/oathkeeper/config.yml
+              environment:
+          {% raw %}
+                MUTATORS_HEADER_CONFIG_HEADERS: '{"X-Auth-Subject":"{{ .Subject }}","X-Auth-Email":"{{ .Extra.email }}","X-From-Oathkeeper":"${OATHKEEPER_SHARED_SECRET:?OATHKEEPER_SHARED_SECRET must be set}"}'
+          {% endraw %}
+              volumes:
+                - ./oathkeeper/config.yml:/etc/oathkeeper/config.yml:ro
+                - ./oathkeeper/access-rules:/etc/oathkeeper/access-rules:ro
+              restart: always
+              networks:
+                - default
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry'] + traefik_labels_list) | to_json }}
+
             a11yvillage-server:
               container_name: "a11yvillage-server{{ project_postfix }}"
               image: {{ image_name }}
@@ -66,7 +176,6 @@
               networks:
                 - default
                 - entry
-              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry'] + traefik_labels_list) | to_json }}
               deploy:
                 resources:
                   limits:
