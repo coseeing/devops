@@ -6,7 +6,15 @@ defaults:
   remind_interval_minutes: 30  # 持續 down 的重複提醒間隔
 
 targets:
-  - name: Frontend
-    url: https://example.com
-  - name: Backend API
-    url: https://api.example.com/health
+  - name: A11yvillage Frontend
+    url: https://a11yvillage.coseeing.org
+  - name: A11yvillage Backend API
+    url: https://api-a11yvillage.coseeing.org/blog/api/
+  - name: Coseeing Frontend
+    url: https://coseeing.org
+  - name: Coseeing Backend API
+    url: https://api.coseeing.org/about/api/
+  - name: Twvip Frontend
+    url: https://www.twvip.org/
+  - name: Twvip Backend API
+    url: https://api.twvip.org/admin/
