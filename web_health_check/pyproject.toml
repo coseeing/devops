@@ -1,0 +1,29 @@
+[project]
+name = "health-check"
+version = "0.1.0"
+description = "HTTP health check service with Slack notifications"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.18"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "health_check"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
