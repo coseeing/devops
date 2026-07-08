@@ -1,0 +1,7 @@
+services:
+  health-check:
+    build: .
+    env_file: .env
+    volumes:
+      - ./targets.yaml:/app/targets.yaml:ro
+    restart: unless-stopped

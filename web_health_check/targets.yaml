@@ -1,0 +1,12 @@
+defaults:
+  check_interval_seconds: 60   # 每分鐘檢查一次
+  timeout_seconds: 10          # 單次請求逾時秒數
+  max_attempts: 3              # 單輪最多測 3 次
+  retry_delay_seconds: 5       # 重試間隔秒數
+  remind_interval_minutes: 30  # 持續 down 的重複提醒間隔
+
+targets:
+  - name: Frontend
+    url: https://example.com
+  - name: Backend API
+    url: https://api.example.com/health
