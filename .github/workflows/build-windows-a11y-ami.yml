@@ -1,0 +1,227 @@
+name: Build Windows A11y AMI
+
+on:
+  workflow_dispatch:
+    inputs:
+      ami_name:
+        description: "AMI 版本標籤 (例如 2026-05-01)"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  RETENTION_COUNT: 3
+
+jobs:
+  build:
+    name: build windows a11y ami
+    environment: windows-a11y
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      ami_id: ${{ steps.create-image.outputs.ami_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Launch build instance
+        id: launch
+        run: |
+          STACK_NAME="windows-a11y-build-${{ github.event.inputs.ami_name }}"
+          echo "stack_name=${STACK_NAME}" >> "$GITHUB_OUTPUT"
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file cloudformation/windows-a11y-instance-template.yml \
+            --parameter-overrides \
+              AmiId=${{ vars.BASE_AMI_ID }} \
+              InstanceType=${{ vars.INSTANCE_TYPE }} \
+              SubnetId=${{ vars.SUBNET_ID }} \
+              SecurityGroupId=${{ vars.SECURITY_GROUP_ID }} \
+              InstanceProfileName=${{ vars.INSTANCE_PROFILE_NAME }} \
+              KeyName=${{ vars.KEY_NAME }} \
+              InstanceName="windows-a11y-build-${{ github.event.inputs.ami_name }}" \
+            --no-fail-on-empty-changeset
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text)
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for instance and SSM registration
+        run: |
+          aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
+          for i in $(seq 1 30); do
+            STATE=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${{ steps.launch.outputs.instance_id }}" --query "InstanceInformationList[0].PingStatus" --output text)
+            if [ "$STATE" == "Online" ]; then
+              echo "SSM agent online."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "SSM agent did not come online in time."
+          exit 1
+
+      - name: Install Windows Updates (repeat until converged)
+        run: |
+          for i in $(seq 1 5); do
+            OUTPUT=$(bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/install-updates.ps1 3600)
+            echo "${OUTPUT}"
+            if echo "${OUTPUT}" | grep -q "No updates found."; then
+              echo "No further updates."
+              break
+            fi
+            if echo "${OUTPUT}" | grep -q "REBOOT_REQUIRED=true"; then
+              echo "Rebooting instance for updates (pass ${i})..."
+              aws ec2 reboot-instances --instance-ids "${{ steps.launch.outputs.instance_id }}"
+              sleep 30
+              aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
+            fi
+          done
+          echo "WINDOWS_UPDATE_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Install/update Chrome, Firefox, NVDA
+        id: software
+        run: |
+          OUTPUT=$(bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/install-software.ps1 1800 | tr -d '\r')
+          echo "${OUTPUT}"
+          echo "chrome_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_GOOGLECHROME=\K.*')" >> "$GITHUB_OUTPUT"
+          echo "firefox_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_FIREFOX=\K.*')" >> "$GITHUB_OUTPUT"
+          echo "nvda_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_NVDA=\K.*')" >> "$GITHUB_OUTPUT"
+
+      - name: Configure RDP and display language
+        run: |
+          bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/configure-system.ps1 900
+          aws ec2 reboot-instances --instance-ids "${{ steps.launch.outputs.instance_id }}"
+          sleep 30
+          aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
+
+      - name: Set up coseeing and user accounts
+        run: |
+          OUTPUT=$(bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/setup-accounts.ps1 300 | tr -d '\r')
+          COSEEING_PASSWORD=$(echo "${OUTPUT}" | grep -oP 'ACCOUNT_PASSWORD_COSEEING=\K.*')
+          USER_PASSWORD=$(echo "${OUTPUT}" | grep -oP 'ACCOUNT_PASSWORD_USER=\K.*')
+          echo "::add-mask::${COSEEING_PASSWORD}"
+          echo "::add-mask::${USER_PASSWORD}"
+
+          for ACCOUNT in coseeing user; do
+            if [ "$ACCOUNT" == "coseeing" ]; then PASSWORD="${COSEEING_PASSWORD}"; else PASSWORD="${USER_PASSWORD}"; fi
+            SECRET_NAME="windows-a11y/${{ github.event.inputs.ami_name }}/${ACCOUNT}"
+            SECRET_JSON=$(jq -n --arg u "$ACCOUNT" --arg p "$PASSWORD" '{username:$u,password:$p}')
+            if aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" >/dev/null 2>&1; then
+              aws secretsmanager put-secret-value --secret-id "${SECRET_NAME}" --secret-string "${SECRET_JSON}" >/dev/null
+            else
+              aws secretsmanager create-secret --name "${SECRET_NAME}" --secret-string "${SECRET_JSON}" >/dev/null
+            fi
+          done
+
+      - name: Verify environment before imaging
+        run: |
+          bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/verify-environment.ps1 300
+
+      - name: Stop instance
+        run: |
+          aws ec2 stop-instances --instance-ids "${{ steps.launch.outputs.instance_id }}"
+          aws ec2 wait instance-stopped --instance-ids "${{ steps.launch.outputs.instance_id }}"
+
+      - name: Create AMI
+        id: create-image
+        run: |
+          AMI_NAME="windows-a11y-${{ github.event.inputs.ami_name }}"
+          IMAGE_ID=$(aws ec2 create-image \
+            --instance-id "${{ steps.launch.outputs.instance_id }}" \
+            --name "${AMI_NAME}" \
+            --description "Windows Server 2025 A11y test environment - ${AMI_NAME}" \
+            --query 'ImageId' --output text)
+          aws ec2 wait image-available --image-ids "${IMAGE_ID}"
+          echo "ami_id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag AMI and snapshots
+        run: |
+          SNAPSHOT_IDS=$(aws ec2 describe-images --image-ids "${{ steps.create-image.outputs.ami_id }}" --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)
+          aws ec2 create-tags --resources "${{ steps.create-image.outputs.ami_id }}" ${SNAPSHOT_IDS} --tags \
+            Key=Name,Value="windows-a11y-${{ github.event.inputs.ami_name }}" \
+            Key=BuildDate,Value="$(date -u +%Y-%m-%d)" \
+            Key=WindowsUpdateDate,Value="${WINDOWS_UPDATE_DATE}" \
+            Key=ChromeVersion,Value="${{ steps.software.outputs.chrome_version }}" \
+            Key=FirefoxVersion,Value="${{ steps.software.outputs.firefox_version }}" \
+            Key=NvdaVersion,Value="${{ steps.software.outputs.nvda_version }}" \
+            Key=PipelineVersion,Value="${{ github.sha }}"
+
+      - name: Clean up old AMIs beyond retention
+        run: |
+          bash scripts/windows-a11y/cleanup-old-amis.sh "windows-a11y-" "${{ env.RETENTION_COUNT }}"
+
+      - name: Terminate build instance
+        if: always()
+        run: |
+          aws cloudformation delete-stack --stack-name "${{ steps.launch.outputs.stack_name }}"
+          aws cloudformation wait stack-delete-complete --stack-name "${{ steps.launch.outputs.stack_name }}"
+
+  verify:
+    name: verify new ami boots and accepts rdp
+    needs: build
+    environment: windows-a11y
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Launch verification instance from new AMI
+        id: launch
+        run: |
+          STACK_NAME="windows-a11y-verify-${{ github.event.inputs.ami_name }}"
+          echo "stack_name=${STACK_NAME}" >> "$GITHUB_OUTPUT"
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file cloudformation/windows-a11y-instance-template.yml \
+            --parameter-overrides \
+              AmiId=${{ needs.build.outputs.ami_id }} \
+              InstanceType=${{ vars.VERIFY_INSTANCE_TYPE }} \
+              SubnetId=${{ vars.SUBNET_ID }} \
+              SecurityGroupId=${{ vars.SECURITY_GROUP_ID }} \
+              InstanceProfileName=${{ vars.INSTANCE_PROFILE_NAME }} \
+              KeyName=${{ vars.KEY_NAME }} \
+              InstanceName="windows-a11y-verify-${{ github.event.inputs.ami_name }}" \
+            --no-fail-on-empty-changeset
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text)
+          PUBLIC_IP=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='PublicIp'].OutputValue" --output text)
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "public_ip=${PUBLIC_IP}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for instance and SSM registration
+        run: |
+          aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
+          for i in $(seq 1 30); do
+            STATE=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${{ steps.launch.outputs.instance_id }}" --query "InstanceInformationList[0].PingStatus" --output text)
+            if [ "$STATE" == "Online" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          exit 1
+
+      - name: Verify accounts and software on launched AMI
+        run: |
+          bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/verify-environment.ps1 300
+
+      - name: Terminate verification instance
+        if: always()
+        run: |
+          aws cloudformation delete-stack --stack-name "${{ steps.launch.outputs.stack_name }}"
+          aws cloudformation wait stack-delete-complete --stack-name "${{ steps.launch.outputs.stack_name }}"
