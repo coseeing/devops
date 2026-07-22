@@ -11,8 +11,9 @@ Get-NetFirewallRule -Name 'RemoteDesktop*' | Enable-NetFirewallRule
 Write-Output "$logPrefix Verifying the Traditional Chinese base image..."
 $installedUiCulture = [System.Globalization.CultureInfo]::InstalledUICulture.Name
 $systemLocale = (Get-WinSystemLocale).Name
-if ($installedUiCulture -ne 'zh-TW' -or $systemLocale -ne 'zh-TW') {
-    throw "Expected the AWS Traditional Chinese base AMI to use zh-TW, but installed UI culture is $installedUiCulture and system locale is $systemLocale."
+$traditionalChineseUiCultures = @('zh-TW', 'zh-HK')
+if ($installedUiCulture -notin $traditionalChineseUiCultures -or $systemLocale -ne 'zh-TW') {
+    throw "Expected the AWS Traditional Chinese base AMI to use a Traditional Chinese UI culture (zh-TW or zh-HK) and the zh-TW system locale, but installed UI culture is $installedUiCulture and system locale is $systemLocale."
 }
 
-Write-Output "$logPrefix Remote Desktop enabled and zh-TW base locale confirmed."
+Write-Output "$logPrefix Remote Desktop enabled and Traditional Chinese base locale confirmed (UI: $installedUiCulture, system: $systemLocale)."
