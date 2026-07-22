@@ -90,13 +90,11 @@ STATUS=$(jq -r '.Status' <<< "${FINAL_INVOCATION}")
 STATUS_DETAILS=$(jq -r '.StatusDetails' <<< "${FINAL_INVOCATION}")
 EXECUTION_ELAPSED=$(jq -r '.ExecutionElapsedTime // "n/a"' <<< "${FINAL_INVOCATION}")
 RESPONSE_CODE=$(jq -r '.ResponseCode' <<< "${FINAL_INVOCATION}")
-STDOUT_CONTENT=$(jq -r '.StandardOutputContent // empty' <<< "${FINAL_INVOCATION}")
-STDERR_CONTENT=$(jq -r '.StandardErrorContent // empty' <<< "${FINAL_INVOCATION}")
 
-echo "${STDOUT_CONTENT}"
+jq -r '.StandardOutputContent // empty' <<< "${FINAL_INVOCATION}" | tr -d '\000'
 
 if [[ "${STATUS}" != "Success" ]]; then
   echo "SSM command ${COMMAND_ID} ended with status ${STATUS} (${STATUS_DETAILS}), response code ${RESPONSE_CODE}, elapsed ${EXECUTION_ELAPSED}" >&2
-  echo "${STDERR_CONTENT}" >&2
+  jq -r '.StandardErrorContent // empty' <<< "${FINAL_INVOCATION}" | tr -d '\000' >&2
   exit 1
 fi

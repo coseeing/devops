@@ -41,7 +41,7 @@ $results.UserAccountExists = [bool](Get-LocalUser -Name 'user' -ErrorAction Sile
 $results.BaseInstalledUiCulture = [System.Globalization.CultureInfo]::InstalledUICulture.Name
 $results.DisplayLanguage = Get-SystemPreferredUILanguage
 $results.SystemLocale = (Get-WinSystemLocale).Name
-$results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -eq 'zh-TW')
+$results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -in @('zh-TW', 'zh-Hant-TW'))
 $results.SystemLocaleIsTraditionalChinese = ($results.SystemLocale -eq 'zh-TW')
 
 $checks = @('ChromeInstalled','FirefoxInstalled','NvdaInstalled','RdpEnabled','CoseeingIsAdmin','UserIsNotAdmin','UserAccountExists','DisplayLanguageIsTraditionalChinese','SystemLocaleIsTraditionalChinese')

@@ -20,7 +20,8 @@ Set-Culture -CultureInfo 'zh-TW'
 
 $preferredUiLanguage = Get-SystemPreferredUILanguage
 $systemLocale = (Get-WinSystemLocale).Name
-if ($preferredUiLanguage -ne 'zh-TW' -or $systemLocale -ne 'zh-TW') {
+$traditionalChineseTaiwanLanguages = @('zh-TW', 'zh-Hant-TW')
+if ($preferredUiLanguage -notin $traditionalChineseTaiwanLanguages -or $systemLocale -ne 'zh-TW') {
     throw "Failed to configure zh-TW: preferred UI language is $preferredUiLanguage and system locale is $systemLocale."
 }
 

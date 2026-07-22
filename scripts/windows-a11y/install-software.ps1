@@ -19,6 +19,7 @@ function Install-GoogleChrome {
     $installerUri = 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi'
     $downloadDirectory = Join-Path $env:TEMP 'windows-a11y-installers'
     $installerPath = Join-Path $downloadDirectory 'googlechromestandaloneenterprise64.msi'
+    $installerLogPath = Join-Path $downloadDirectory 'googlechrome-install.log'
 
     New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
 
@@ -35,10 +36,21 @@ function Install-GoogleChrome {
     }
 
     Write-Output "$logPrefix Installing/updating Google Chrome (verified publisher: $publisher)..."
-    & msiexec.exe /i $installerPath /qn /norestart
-    $exitCode = $LASTEXITCODE
+    # Start-Process avoids sending msiexec's UTF-16 output through SSM and, with
+    # -Wait, does not let executable verification race the installer service.
+    $installerArguments = @(
+        '/i'
+        "`"$installerPath`""
+        '/qn'
+        '/norestart'
+        '/L*v'
+        "`"$installerLogPath`""
+    )
+    $installerProcess = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $installerArguments -Wait -PassThru
+    $exitCode = $installerProcess.ExitCode
     if ($exitCode -notin @(0, 1641, 3010)) {
-        throw "$logPrefix Google Chrome MSI installation failed with exit code $exitCode"
+        $logTail = (Get-Content -LiteralPath $installerLogPath -Tail 40 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+        throw "$logPrefix Google Chrome MSI installation failed with exit code $exitCode.`n$logTail"
     }
 
     Remove-Item -Path $installerPath -Force
@@ -96,6 +108,22 @@ function Find-GoogleChromeExecutable {
     return $candidates | Select-Object -Unique | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 
+function Wait-GoogleChromeExecutable {
+    param([int]$TimeoutSeconds = 60)
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        $executable = Find-GoogleChromeExecutable
+        if ($executable) {
+            return $executable
+        }
+
+        Start-Sleep -Seconds 2
+    } while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+
+    return $null
+}
+
 $packages = @('firefox', 'nvda')
 foreach ($package in $packages) {
     Install-OrUpgradePackage -Package $package
@@ -104,9 +132,11 @@ foreach ($package in $packages) {
 Install-GoogleChrome
 
 Write-Output "$logPrefix Installed package versions:"
-$chromeExecutable = Find-GoogleChromeExecutable
+$chromeExecutable = Wait-GoogleChromeExecutable
 if (-not $chromeExecutable) {
-    throw "$logPrefix GOOGLECHROME executable was not found in either Program Files directory or the machine App Paths registry."
+    $installerLogPath = Join-Path $env:TEMP 'windows-a11y-installers\googlechrome-install.log'
+    $logTail = (Get-Content -LiteralPath $installerLogPath -Tail 40 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+    throw "$logPrefix GOOGLECHROME executable was not found after waiting for the MSI installation to settle. MSI log: $installerLogPath`n$logTail"
 }
 
 $softwareExecutables = [ordered]@{
