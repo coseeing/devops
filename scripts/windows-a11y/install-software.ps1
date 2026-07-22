@@ -74,6 +74,28 @@ function Install-OrUpgradePackage {
     throw "$logPrefix choco upgrade $Package failed after $MaxAttempts attempts (last exit code: $exitCode)"
 }
 
+function Find-GoogleChromeExecutable {
+    $candidates = @(
+        'C:\Program Files\Google\Chrome\Application\chrome.exe'
+        'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
+    )
+    $appPathRegistryKeys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe'
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe'
+    )
+
+    foreach ($registryKey in $appPathRegistryKeys) {
+        if (Test-Path $registryKey) {
+            $registeredPath = (Get-Item -LiteralPath $registryKey).GetValue('')
+            if ($registeredPath) {
+                $candidates += $registeredPath.Trim('"')
+            }
+        }
+    }
+
+    return $candidates | Select-Object -Unique | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+
 $packages = @('firefox', 'nvda')
 foreach ($package in $packages) {
     Install-OrUpgradePackage -Package $package
@@ -82,8 +104,13 @@ foreach ($package in $packages) {
 Install-GoogleChrome
 
 Write-Output "$logPrefix Installed package versions:"
+$chromeExecutable = Find-GoogleChromeExecutable
+if (-not $chromeExecutable) {
+    throw "$logPrefix GOOGLECHROME executable was not found in either Program Files directory or the machine App Paths registry."
+}
+
 $softwareExecutables = [ordered]@{
-    GOOGLECHROME = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+    GOOGLECHROME = $chromeExecutable
     FIREFOX = 'C:\Program Files\Mozilla Firefox\firefox.exe'
     NVDA = 'C:\Program Files (x86)\NVDA\nvda.exe'
 }
