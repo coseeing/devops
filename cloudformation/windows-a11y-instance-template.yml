@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Windows A11y build/verification EC2 instance (ordinary shared-tenancy - Windows Server does not require a Dedicated Host)
+
+Parameters:
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Windows AMI to launch (AWS public Windows Server 2025 base AMI for builds, or a windows-a11y-* AMI for verification)
+  InstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EC2 instance type
+  DiskSize:
+    Type: Number
+    Default: 100
+    Description: Size of the root EBS volume in GB
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet ID to launch the instance into
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: RDP security group ID created manually per docs/windows-a11y-aws-manual-setup.md
+  InstanceProfileName:
+    Type: String
+    Description: SSM instance profile name created manually per docs/windows-a11y-aws-manual-setup.md
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 KeyPair for emergency access
+  InstanceName:
+    Type: String
+    Description: Name tag for the instance
+
+Resources:
+  WindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceName
+
+Outputs:
+  InstanceId:
+    Description: The Instance ID
+    Value: !Ref WindowsInstance
+
+  PublicIp:
+    Description: Public IP address of the instance
+    Value: !GetAtt WindowsInstance.PublicIp
