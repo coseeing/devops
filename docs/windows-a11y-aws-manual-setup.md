@@ -1,22 +1,21 @@
 # Windows A11y Pipeline — One-Time AWS Console Setup
 
-Do this once before the first build (or again only if the office/VPN CIDR changes,
-or you want to rotate the base AMI). Everything here is manual, GUI-driven setup —
+Do this once before the first build (or again only if the office/VPN CIDR changes).
+Everything here is manual, GUI-driven setup —
 the recurring build itself is fully automated by `.github/workflows/build-windows-a11y-ami.yml`.
 
-## 1. Look up the Windows Server 2025 base AMI ID
+## 1. Base AMI selection (automatic)
 
-1. AWS Console → **EC2** → make sure the region selector (top right) is set to **Asia Pacific (Tokyo) ap-northeast-1**.
-2. Left sidebar → **AMI Catalog**.
-3. Search box → type `Windows Server 2025`.
-4. Under **Quick Start AMIs**, find the entry published by **Amazon** named something like
-   `Microsoft Windows Server 2025 Full Base` (NOT the "Core" edition — Core has no GUI shell,
-   and Chrome/Firefox/NVDA need the full desktop experience).
-5. Click it, copy the **AMI ID** shown (e.g. `ami-0123456789abcdef0`).
-   - Alternative lookup: **Systems Manager** → **Parameter Store** → search
-     `/aws/service/ami-windows-latest/Windows_Server-2025-English-Full-Base` → **Value** tab shows the
-     current AMI ID AWS publishes for this edition.
-6. Record this value — it becomes the `BASE_AMI_ID` GitHub variable in step 5.
+The workflow resolves this AWS public Systems Manager parameter at build time:
+
+```text
+/aws/service/ami-windows-latest/Windows_Server-2025-Chinese_Traditional-Full-Base
+```
+
+It therefore always starts from Amazon's latest Traditional Chinese Windows Server 2025
+Full Base AMI. Do not create a `BASE_AMI_ID` GitHub variable and do not replace this with the
+English image: installing a display language during SSM provisioning is slow, opaque, and less
+reliable than using the localized base image.
 
 ## 2. Create the RDP security group
 
@@ -50,6 +49,35 @@ in the pipeline needs to change.
 Creating an EC2 role through the console automatically creates a matching **instance profile**
 with the same name — `windows-a11y-ssm-instance-role` is both the role name and the instance
 profile name you'll use. Record it — it becomes the `INSTANCE_PROFILE_NAME` GitHub variable in step 5.
+
+8. Open the new role → **Add permissions** → **Create inline policy** → **JSON**, and add the
+   following policy so SSM can stream command output to the pipeline's CloudWatch Logs group:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateWindowsA11ySsmLogGroup",
+      "Effect": "Allow",
+      "Action": "logs:CreateLogGroup",
+      "Resource": "*"
+    },
+    {
+      "Sid": "WriteWindowsA11ySsmLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:DescribeLogStreams",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:ap-northeast-1:*:log-group:/aws/ssm/windows-a11y:*"
+    }
+  ]
+}
+```
+
+9. Name it `windows-a11y-ssm-cloudwatch-logs` and create the policy.
 
 ## 4. Extend the GitHub Actions deploy role's permissions
 
@@ -97,9 +125,19 @@ The pipeline assumes the same role every other workflow in this repo already use
         "ssm:SendCommand",
         "ssm:GetCommandInvocation",
         "ssm:ListCommandInvocations",
-        "ssm:DescribeInstanceInformation"
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetParameter"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "WindowsA11yReadSsmCommandLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:GetLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": "arn:aws:logs:ap-northeast-1:*:log-group:/aws/ssm/windows-a11y:*"
     },
     {
       "Sid": "WindowsA11ySecretsManager",
@@ -136,7 +174,6 @@ in **Secrets Manager** console under that prefix.
 
    | Variable | Value | Where it comes from |
    |---|---|---|
-   | `BASE_AMI_ID` | e.g. `ami-0123456789abcdef0` | Step 1 |
    | `SECURITY_GROUP_ID` | e.g. `sg-0123456789abcdef0` | Step 2 |
    | `INSTANCE_PROFILE_NAME` | `windows-a11y-ssm-instance-role` | Step 3 |
    | `INSTANCE_TYPE` | `m5.xlarge` | fixed default |
