@@ -38,12 +38,17 @@ jobs:
         id: launch
         run: |
           STACK_NAME="windows-a11y-build-${{ github.event.inputs.ami_name }}"
+          BASE_AMI_ID=$(aws ssm get-parameter \
+            --name /aws/service/ami-windows-latest/Windows_Server-2025-Chinese_Traditional-Full-Base \
+            --query 'Parameter.Value' \
+            --output text)
+          echo "Using AWS Traditional Chinese Windows Server 2025 AMI ${BASE_AMI_ID}."
           echo "stack_name=${STACK_NAME}" >> "$GITHUB_OUTPUT"
           aws cloudformation deploy \
             --stack-name "${STACK_NAME}" \
             --template-file cloudformation/windows-a11y-instance-template.yml \
             --parameter-overrides \
-              AmiId=${{ vars.BASE_AMI_ID }} \
+              AmiId=${BASE_AMI_ID} \
               InstanceType=${{ vars.INSTANCE_TYPE }} \
               SubnetId=${{ vars.SUBNET_ID }} \
               SecurityGroupId=${{ vars.SECURITY_GROUP_ID }} \
@@ -95,12 +100,9 @@ jobs:
           echo "firefox_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_FIREFOX=\K.*')" >> "$GITHUB_OUTPUT"
           echo "nvda_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_NVDA=\K.*')" >> "$GITHUB_OUTPUT"
 
-      - name: Configure RDP and display language
+      - name: Configure RDP and verify display language
         run: |
           bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/configure-system.ps1 3600
-          aws ec2 reboot-instances --instance-ids "${{ steps.launch.outputs.instance_id }}"
-          sleep 30
-          aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
 
       - name: Set up coseeing and user accounts
         run: |

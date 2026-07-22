@@ -15,9 +15,12 @@ $results.RdpEnabled = ($rdpValue -eq 0)
 $results.CoseeingIsAdmin = [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'coseeing' -ErrorAction SilentlyContinue)
 $results.UserIsNotAdmin = -not [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'user' -ErrorAction SilentlyContinue)
 $results.UserAccountExists = [bool](Get-LocalUser -Name 'user' -ErrorAction SilentlyContinue)
-$results.DisplayLanguage = (Get-WinSystemLocale).Name
+$results.DisplayLanguage = [System.Globalization.CultureInfo]::InstalledUICulture.Name
+$results.SystemLocale = (Get-WinSystemLocale).Name
+$results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -eq 'zh-TW')
+$results.SystemLocaleIsTraditionalChinese = ($results.SystemLocale -eq 'zh-TW')
 
-$checks = @('ChromeInstalled','FirefoxInstalled','NvdaInstalled','RdpEnabled','CoseeingIsAdmin','UserIsNotAdmin','UserAccountExists')
+$checks = @('ChromeInstalled','FirefoxInstalled','NvdaInstalled','RdpEnabled','CoseeingIsAdmin','UserIsNotAdmin','UserAccountExists','DisplayLanguageIsTraditionalChinese','SystemLocaleIsTraditionalChinese')
 $allPassed = -not ($checks | Where-Object { $results[$_] -ne $true })
 $results.AllChecksPassed = $allPassed
 

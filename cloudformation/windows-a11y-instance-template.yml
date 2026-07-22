@@ -4,7 +4,7 @@ Description: Windows A11y build/verification EC2 instance (ordinary shared-tenan
 Parameters:
   AmiId:
     Type: AWS::EC2::Image::Id
-    Description: Windows AMI to launch (AWS public Windows Server 2025 base AMI for builds, or a windows-a11y-* AMI for verification)
+    Description: Windows AMI to launch (AWS public Traditional Chinese Windows Server 2025 base AMI for builds, or a windows-a11y-* AMI for verification)
   InstanceType:
     Type: String
     Default: m5.xlarge
