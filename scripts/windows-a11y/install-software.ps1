@@ -12,17 +12,46 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     $env:Path = "$env:Path;C:\ProgramData\chocolatey\bin"
 }
 
+$chocoPath = (Get-Command choco -ErrorAction Stop).Source
+$successfulExitCodes = @(0, 2, 1641, 3010)
+
+function Install-OrUpgradePackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Package,
+
+        [int]$MaxAttempts = 3
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Output "$logPrefix Installing/updating $Package (attempt $attempt of $MaxAttempts)..."
+
+        # Do not discard Chocolatey's output: it contains the installer-specific
+        # error that is needed to diagnose failures from the SSM command log.
+        & $chocoPath upgrade $Package -y --no-progress --execution-timeout=1200 --ignore-detected-reboot
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -in $successfulExitCodes) {
+            return
+        }
+
+        if ($attempt -lt $MaxAttempts) {
+            $retryDelay = 15 * $attempt
+            Write-Warning "$logPrefix choco upgrade $Package failed with exit code $exitCode; retrying in $retryDelay seconds."
+            Start-Sleep -Seconds $retryDelay
+        }
+    }
+
+    throw "$logPrefix choco upgrade $Package failed after $MaxAttempts attempts (last exit code: $exitCode)"
+}
+
 $packages = @('googlechrome', 'firefox', 'nvda')
 foreach ($package in $packages) {
-    Write-Output "$logPrefix Installing/updating $package..."
-    choco upgrade $package -y --no-progress | Out-Null
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
-        throw "$logPrefix choco upgrade $package failed with exit code $LASTEXITCODE"
-    }
+    Install-OrUpgradePackage -Package $package
 }
 
 Write-Output "$logPrefix Installed package versions:"
-$versionLines = @(choco list --limit-output |
+$versionLines = @(& $chocoPath list --limit-output |
     Where-Object { $_ -match '^(googlechrome|firefox|nvda)\|' })
 if ($versionLines.Count -lt $packages.Count) {
     throw "$logPrefix Expected $($packages.Count) installed package versions but found $($versionLines.Count): $($versionLines -join '; ')"
