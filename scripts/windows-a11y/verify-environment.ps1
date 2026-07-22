@@ -38,9 +38,10 @@ $results.RdpEnabled = ($rdpValue -eq 0)
 $results.CoseeingIsAdmin = [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'coseeing' -ErrorAction SilentlyContinue)
 $results.UserIsNotAdmin = -not [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'user' -ErrorAction SilentlyContinue)
 $results.UserAccountExists = [bool](Get-LocalUser -Name 'user' -ErrorAction SilentlyContinue)
-$results.DisplayLanguage = [System.Globalization.CultureInfo]::InstalledUICulture.Name
+$results.BaseInstalledUiCulture = [System.Globalization.CultureInfo]::InstalledUICulture.Name
+$results.DisplayLanguage = Get-SystemPreferredUILanguage
 $results.SystemLocale = (Get-WinSystemLocale).Name
-$results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -in @('zh-TW', 'zh-HK'))
+$results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -eq 'zh-TW')
 $results.SystemLocaleIsTraditionalChinese = ($results.SystemLocale -eq 'zh-TW')
 
 $checks = @('ChromeInstalled','FirefoxInstalled','NvdaInstalled','RdpEnabled','CoseeingIsAdmin','UserIsNotAdmin','UserAccountExists','DisplayLanguageIsTraditionalChinese','SystemLocaleIsTraditionalChinese')

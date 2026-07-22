@@ -100,9 +100,21 @@ jobs:
           echo "firefox_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_FIREFOX=\K.*')" >> "$GITHUB_OUTPUT"
           echo "nvda_version=$(echo "${OUTPUT}" | grep -oP 'VERSION_NVDA=\K.*')" >> "$GITHUB_OUTPUT"
 
-      - name: Configure RDP and verify display language
+      - name: Configure RDP and zh-TW display language
         run: |
           bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/configure-system.ps1 3600
+          aws ec2 reboot-instances --instance-ids "${{ steps.launch.outputs.instance_id }}"
+          sleep 30
+          aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
+          for i in $(seq 1 30); do
+            STATE=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${{ steps.launch.outputs.instance_id }}" --query "InstanceInformationList[0].PingStatus" --output text)
+            if [ "$STATE" == "Online" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "SSM agent did not come online after the language configuration reboot."
+          exit 1
 
       - name: Set up coseeing and user accounts
         run: |
