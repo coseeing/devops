@@ -1,0 +1,117 @@
+name: Launch Windows A11y EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ami_name:
+        description: "AMI 版本標籤（需與 build-windows-a11y-ami 的 ami_name 相同）"
+        required: true
+        type: string
+      stack_name:
+        description: "CloudFormation stack name"
+        required: true
+        default: "windows-a11y"
+        type: string
+      instance_name:
+        description: "EC2 Name tag"
+        required: true
+        default: "windows-a11y"
+        type: string
+      instance_type:
+        description: "EC2 instance type"
+        required: true
+        default: "m5.xlarge"
+        type: string
+      disk_size:
+        description: "Root EBS volume size (GiB)"
+        required: true
+        default: "100"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  launch:
+    name: launch ec2 from windows a11y ami
+    environment: windows-a11y
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Find the built Windows A11y AMI
+        id: ami
+        env:
+          AMI_NAME: windows-a11y-${{ inputs.ami_name }}
+        run: |
+          IMAGE_ID=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=${AMI_NAME}" "Name=state,Values=available" \
+            --query 'reverse(sort_by(Images, &CreationDate))[0].ImageId' \
+            --output text)
+
+          if [ -z "${IMAGE_ID}" ] || [ "${IMAGE_ID}" = "None" ]; then
+            echo "::error::No available AMI named ${AMI_NAME} was found in ${AWS_REGION}."
+            exit 1
+          fi
+
+          echo "Using ${AMI_NAME} (${IMAGE_ID})."
+          echo "image_id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy EC2 instance
+        env:
+          AMI_ID: ${{ steps.ami.outputs.image_id }}
+          DISK_SIZE: ${{ inputs.disk_size }}
+          INSTANCE_NAME: ${{ inputs.instance_name }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          STACK_NAME: ${{ inputs.stack_name }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file cloudformation/windows-a11y-instance-template.yml \
+            --parameter-overrides \
+              AmiId="${AMI_ID}" \
+              InstanceType="${INSTANCE_TYPE}" \
+              DiskSize="${DISK_SIZE}" \
+              SubnetId="${{ vars.SUBNET_ID }}" \
+              SecurityGroupId="${{ vars.SECURITY_GROUP_ID }}" \
+              InstanceProfileName="${{ vars.INSTANCE_PROFILE_NAME }}" \
+              KeyName="${{ vars.KEY_NAME }}" \
+              InstanceName="${INSTANCE_NAME}" \
+            --no-fail-on-empty-changeset
+
+      - name: Wait for instance and publish connection details
+        env:
+          AMI_ID: ${{ steps.ami.outputs.image_id }}
+          STACK_NAME: ${{ inputs.stack_name }}
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" \
+            --output text)
+          aws ec2 wait instance-status-ok --instance-ids "${INSTANCE_ID}"
+          PUBLIC_IP=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='PublicIp'].OutputValue" \
+            --output text)
+
+          {
+            echo "## Windows A11y EC2 launched"
+            echo "- AMI: \`${AMI_ID}\`"
+            echo "- Instance: \`${INSTANCE_ID}\`"
+            echo "- Public IP: \`${PUBLIC_IP}\`"
+            echo "- Stack: \`${STACK_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
