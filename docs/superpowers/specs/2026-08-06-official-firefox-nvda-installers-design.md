@@ -60,7 +60,7 @@ For each product:
    15 seconds and then 30 seconds before the two retries.
 4. Require an Authenticode status of `Valid` and an expected publisher:
    `Mozilla Corporation` for Firefox and `NV Access Limited` for NVDA.
-5. Run the installer silently and wait for completion: Firefox with `-ms` and
+5. Run the installer silently and wait for completion: Firefox with `/S` and
    NVDA with `--install-silent`.
 6. Accept exit code `0` from both executable installers; otherwise fail the
    provisioning command with the exit code and available diagnostic context.
