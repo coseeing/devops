@@ -1,18 +1,83 @@
 [CmdletBinding()]
-param()
+param([switch]$SkipExecution)
 
 $ErrorActionPreference = 'Stop'
 $logPrefix = '[install-software]'
+$nvdaStableBaseUri = [Uri]'https://download.nvaccess.org/releases/stable/'
 
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-    Write-Output "$logPrefix Installing Chocolatey..."
-    Set-ExecutionPolicy Bypass -Scope Process -Force
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-    $env:Path = "$env:Path;C:\ProgramData\chocolatey\bin"
+function Get-FirefoxInstallerUri {
+    return [Uri]'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-TW'
 }
 
-$chocoPath = (Get-Command choco -ErrorAction Stop).Source
+function Get-NvdaStableInstallerUri {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [Uri]$BaseUri = $nvdaStableBaseUri
+    )
+
+    $hrefPattern = 'href=["''](?<href>nvda_(?<version>\d{4}\.\d+(?:\.\d+)?)\.exe)["'']'
+    $matches = @([regex]::Matches($Content, $hrefPattern, 'IgnoreCase'))
+    if ($matches.Count -ne 1) {
+        throw "$logPrefix Expected exactly one numeric stable NVDA installer, found $($matches.Count)."
+    }
+    return [Uri]::new($BaseUri, $matches[0].Groups['href'].Value)
+}
+
+function Invoke-WebRequestWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][Uri]$Uri,
+        [string]$OutFile,
+        [int]$MaxAttempts = 3
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            $parameters = @{ Uri = $Uri; UseBasicParsing = $true }
+            if ($OutFile) { $parameters.OutFile = $OutFile }
+            return Invoke-WebRequest @parameters
+        } catch {
+            if ($attempt -eq $MaxAttempts) {
+                throw "$logPrefix Download from $Uri failed after $MaxAttempts attempts: $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds (15 * $attempt)
+        }
+    }
+}
+
+function Assert-AuthenticodePublisher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ProductName,
+        [Parameter(Mandatory = $true)][string]$PublisherPattern
+    )
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    $publisher = if ($signature.SignerCertificate) {
+        $signature.SignerCertificate.Subject
+    } else {
+        ''
+    }
+    if ($signature.Status -ne 'Valid' -or $publisher -notmatch $PublisherPattern) {
+        throw "$logPrefix $ProductName signature verification failed (status: $($signature.Status), publisher: $publisher)"
+    }
+}
+
+function Assert-InstallerExitCode {
+    param([string]$ProductName, [int]$ExitCode)
+    if ($ExitCode -ne 0) {
+        throw "$logPrefix $ProductName installation failed with exit code $ExitCode."
+    }
+}
+
+if (-not $SkipExecution) {
+    if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+        Write-Output "$logPrefix Installing Chocolatey..."
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        $env:Path = "$env:Path;C:\ProgramData\chocolatey\bin"
+    }
+
+    $chocoPath = (Get-Command choco -ErrorAction Stop).Source
+}
 $successfulExitCodes = @(0, 2, 1641, 3010)
 
 function Install-GoogleChrome {
@@ -124,32 +189,34 @@ function Wait-GoogleChromeExecutable {
     return $null
 }
 
-$packages = @('firefox', 'nvda')
-foreach ($package in $packages) {
-    Install-OrUpgradePackage -Package $package
-}
-
-Install-GoogleChrome
-
-Write-Output "$logPrefix Installed package versions:"
-$chromeExecutable = Wait-GoogleChromeExecutable
-if (-not $chromeExecutable) {
-    $installerLogPath = Join-Path $env:TEMP 'windows-a11y-installers\googlechrome-install.log'
-    $logTail = (Get-Content -LiteralPath $installerLogPath -Tail 40 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
-    throw "$logPrefix GOOGLECHROME executable was not found after waiting for the MSI installation to settle. MSI log: $installerLogPath`n$logTail"
-}
-
-$softwareExecutables = [ordered]@{
-    GOOGLECHROME = $chromeExecutable
-    FIREFOX = 'C:\Program Files\Mozilla Firefox\firefox.exe'
-    NVDA = 'C:\Program Files (x86)\NVDA\nvda.exe'
-}
-foreach ($software in $softwareExecutables.GetEnumerator()) {
-    if (-not (Test-Path $software.Value)) {
-        throw "$logPrefix $($software.Key) executable was not found at $($software.Value)"
+if (-not $SkipExecution) {
+    $packages = @('firefox', 'nvda')
+    foreach ($package in $packages) {
+        Install-OrUpgradePackage -Package $package
     }
 
-    $versionInfo = (Get-Item $software.Value).VersionInfo
-    $version = if ($versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $versionInfo.FileVersion }
-    Write-Output "VERSION_$($software.Key)=$version"
+    Install-GoogleChrome
+
+    Write-Output "$logPrefix Installed package versions:"
+    $chromeExecutable = Wait-GoogleChromeExecutable
+    if (-not $chromeExecutable) {
+        $installerLogPath = Join-Path $env:TEMP 'windows-a11y-installers\googlechrome-install.log'
+        $logTail = (Get-Content -LiteralPath $installerLogPath -Tail 40 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+        throw "$logPrefix GOOGLECHROME executable was not found after waiting for the MSI installation to settle. MSI log: $installerLogPath`n$logTail"
+    }
+
+    $softwareExecutables = [ordered]@{
+        GOOGLECHROME = $chromeExecutable
+        FIREFOX = 'C:\Program Files\Mozilla Firefox\firefox.exe'
+        NVDA = 'C:\Program Files (x86)\NVDA\nvda.exe'
+    }
+    foreach ($software in $softwareExecutables.GetEnumerator()) {
+        if (-not (Test-Path $software.Value)) {
+            throw "$logPrefix $($software.Key) executable was not found at $($software.Value)"
+        }
+
+        $versionInfo = (Get-Item $software.Value).VersionInfo
+        $version = if ($versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $versionInfo.FileVersion }
+        Write-Output "VERSION_$($software.Key)=$version"
+    }
 }
