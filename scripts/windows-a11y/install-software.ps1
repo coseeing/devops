@@ -27,7 +27,7 @@ function Invoke-WebRequestWithRetry {
     param(
         [Parameter(Mandatory = $true)][Uri]$Uri,
         [string]$OutFile,
-        [int]$MaxAttempts = 3
+        [ValidateRange(1, 3)][int]$MaxAttempts = 3
     )
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {

@@ -88,6 +88,14 @@ Describe 'publisher and exit-code validation' {
 }
 
 Describe 'bounded official download retries' {
+    It 'rejects download retry counts above three' {
+        Mock Invoke-WebRequest
+
+        { Invoke-WebRequestWithRetry -Uri 'https://download.mozilla.org/example.exe' `
+                -OutFile "$TestDrive\example.exe" -MaxAttempts 4 } |
+            Should -Throw '*MaxAttempts*'
+    }
+
     It 'retries twice and succeeds on the third attempt' {
         $script:attempt = 0
         Mock Invoke-WebRequest {
