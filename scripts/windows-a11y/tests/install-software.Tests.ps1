@@ -111,6 +111,43 @@ Describe 'bounded official download retries' {
         Should -Invoke Start-Sleep -Times 1 -ParameterFilter { $Seconds -eq 15 }
         Should -Invoke Start-Sleep -Times 1 -ParameterFilter { $Seconds -eq 30 }
     }
+
+    It 'fails after three requests with contextual retry warnings' {
+        Mock Invoke-WebRequest { throw 'temporary failure' }
+        Mock Start-Sleep
+        Mock Write-Warning
+
+        { Invoke-WebRequestWithRetry -Uri 'https://download.mozilla.org/example.exe' `
+                -OutFile "$TestDrive\example.exe" -Operation 'Firefox installer download' } |
+            Should -Throw '*failed after 3 attempts*'
+
+        Should -Invoke Invoke-WebRequest -Times 3 -Exactly
+        Should -Invoke Start-Sleep -Times 1 -ParameterFilter { $Seconds -eq 15 }
+        Should -Invoke Start-Sleep -Times 1 -ParameterFilter { $Seconds -eq 30 }
+        Should -Invoke Start-Sleep -Times 2 -Exactly
+        Should -Invoke Write-Warning -Times 1 -ParameterFilter {
+            $Message -like '*Firefox installer download*attempt 1 of 3*15*'
+        }
+        Should -Invoke Write-Warning -Times 1 -ParameterFilter {
+            $Message -like '*Firefox installer download*attempt 2 of 3*30*'
+        }
+    }
+}
+
+Describe 'NVDA executable resolution' {
+    It 'prefers the current 64-bit NVDA executable path' {
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Program Files\NVDA\nvda.exe' }
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Program Files (x86)\NVDA\nvda.exe' }
+
+        Find-NvdaExecutable | Should -BeExactly 'C:\Program Files\NVDA\nvda.exe'
+    }
+
+    It 'falls back to the legacy x86 NVDA executable path' {
+        Mock Test-Path { $false } -ParameterFilter { $LiteralPath -eq 'C:\Program Files\NVDA\nvda.exe' }
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Program Files (x86)\NVDA\nvda.exe' }
+
+        Find-NvdaExecutable | Should -BeExactly 'C:\Program Files (x86)\NVDA\nvda.exe'
+    }
 }
 
 Describe 'official product installers' {
@@ -127,7 +164,8 @@ Describe 'official product installers' {
     It 'downloads and silently installs Firefox zh-TW win64' {
         Install-Firefox
         Should -Invoke Invoke-WebRequestWithRetry -Times 1 -ParameterFilter {
-            $Uri.AbsoluteUri -eq 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-TW'
+            $Uri.AbsoluteUri -eq 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-TW' -and
+            $Operation -eq 'Firefox installer download'
         }
         Should -Invoke Assert-AuthenticodePublisher -Times 1 -ParameterFilter {
             $ProductName -eq 'Firefox' -and
@@ -145,7 +183,12 @@ Describe 'official product installers' {
 
         Install-Nvda
         Should -Invoke Invoke-WebRequestWithRetry -Times 1 -ParameterFilter {
-            $Uri.AbsoluteUri -eq 'https://download.nvaccess.org/releases/stable/' -and -not $OutFile
+            $Uri.AbsoluteUri -eq 'https://download.nvaccess.org/releases/stable/' -and -not $OutFile -and
+            $Operation -eq 'NVDA stable listing download'
+        }
+        Should -Invoke Invoke-WebRequestWithRetry -Times 1 -ParameterFilter {
+            $Uri.AbsoluteUri -eq 'https://download.nvaccess.org/releases/stable/nvda_2026.1.1.exe' -and
+            $Operation -eq 'NVDA installer download'
         }
         Should -Invoke Assert-AuthenticodePublisher -Times 1 -ParameterFilter {
             $ProductName -eq 'NVDA' -and

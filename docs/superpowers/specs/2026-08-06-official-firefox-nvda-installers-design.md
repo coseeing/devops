@@ -67,8 +67,9 @@ For each product:
 7. Remove the downloaded installer after successful installation.
 
 Firefox will use Mozilla's supported silent-install switch. NVDA will use its
-silent install command and install system-wide at the existing executable
-location expected by `verify-environment.ps1`.
+silent install command and install system-wide at the current 64-bit executable
+location expected by `verify-environment.ps1`. The legacy x86 location remains
+an explicit fallback for existing installations.
 
 There is no Chocolatey fallback. An unavailable official endpoint, malformed
 stable listing, invalid signature, unexpected publisher, or failed installer
@@ -80,7 +81,8 @@ the image.
 The existing executable checks remain authoritative:
 
 - Firefox: `C:\Program Files\Mozilla Firefox\firefox.exe`
-- NVDA: `C:\Program Files (x86)\NVDA\nvda.exe`
+- NVDA primary: `C:\Program Files\NVDA\nvda.exe`
+- NVDA legacy fallback: `C:\Program Files (x86)\NVDA\nvda.exe`
 
 After installation, the script will continue reading product/file version
 metadata from those executables and emitting the existing lines:

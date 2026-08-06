@@ -23,10 +23,20 @@ function Get-NvdaStableInstallerUri {
     return [Uri]::new($BaseUri, $matches[0].Groups['href'].Value)
 }
 
+function Find-NvdaExecutable {
+    $candidates = @(
+        'C:\Program Files\NVDA\nvda.exe'
+        'C:\Program Files (x86)\NVDA\nvda.exe'
+    )
+
+    return $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+
 function Invoke-WebRequestWithRetry {
     param(
         [Parameter(Mandatory = $true)][Uri]$Uri,
         [string]$OutFile,
+        [string]$Operation = 'download',
         [ValidateRange(1, 3)][int]$MaxAttempts = 3
     )
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
@@ -38,7 +48,9 @@ function Invoke-WebRequestWithRetry {
             if ($attempt -eq $MaxAttempts) {
                 throw "$logPrefix Download from $Uri failed after $MaxAttempts attempts: $($_.Exception.Message)"
             }
-            Start-Sleep -Seconds (15 * $attempt)
+            $delaySeconds = 15 * $attempt
+            Write-Warning "$logPrefix $Operation attempt $attempt of $MaxAttempts failed; retrying in $delaySeconds seconds."
+            Start-Sleep -Seconds $delaySeconds
         }
     }
 }
@@ -71,7 +83,8 @@ function Install-Firefox {
     $downloadDirectory = Join-Path $env:TEMP 'windows-a11y-installers'
     $installerPath = Join-Path $downloadDirectory 'firefox-zh-TW-win64-latest.exe'
     New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
-    Invoke-WebRequestWithRetry -Uri (Get-FirefoxInstallerUri) -OutFile $installerPath
+    Invoke-WebRequestWithRetry -Uri (Get-FirefoxInstallerUri) -OutFile $installerPath `
+        -Operation 'Firefox installer download'
     Assert-AuthenticodePublisher -Path $installerPath -ProductName 'Firefox' `
         -PublisherPattern '(^|, )O=Mozilla Corporation(,|$)'
     $process = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru
@@ -82,10 +95,10 @@ function Install-Firefox {
 function Install-Nvda {
     $downloadDirectory = Join-Path $env:TEMP 'windows-a11y-installers'
     New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
-    $listing = Invoke-WebRequestWithRetry -Uri $nvdaStableBaseUri
+    $listing = Invoke-WebRequestWithRetry -Uri $nvdaStableBaseUri -Operation 'NVDA stable listing download'
     $installerUri = Get-NvdaStableInstallerUri -Content $listing.Content
     $installerPath = Join-Path $downloadDirectory ([IO.Path]::GetFileName($installerUri.AbsolutePath))
-    Invoke-WebRequestWithRetry -Uri $installerUri -OutFile $installerPath
+    Invoke-WebRequestWithRetry -Uri $installerUri -OutFile $installerPath -Operation 'NVDA installer download'
     Assert-AuthenticodePublisher -Path $installerPath -ProductName 'NVDA' `
         -PublisherPattern '(^|, )O=NV Access Limited(,|$)'
     $process = Start-Process -FilePath $installerPath -ArgumentList @('--install-silent') -Wait -PassThru
@@ -207,7 +220,7 @@ function Invoke-InstallSoftware {
     $softwareExecutables = [ordered]@{
         GOOGLECHROME = $chromeExecutable
         FIREFOX = 'C:\Program Files\Mozilla Firefox\firefox.exe'
-        NVDA = 'C:\Program Files (x86)\NVDA\nvda.exe'
+        NVDA = Find-NvdaExecutable
     }
     Write-InstalledSoftwareVersions -SoftwareExecutables $softwareExecutables
 }

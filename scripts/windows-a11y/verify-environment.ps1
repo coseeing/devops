@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$SkipExecution)
 
 $ErrorActionPreference = 'Stop'
 
@@ -25,32 +25,48 @@ function Find-GoogleChromeExecutable {
     return $candidates | Select-Object -Unique | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 
-$results = [ordered]@{}
+function Find-NvdaExecutable {
+    $candidates = @(
+        'C:\Program Files\NVDA\nvda.exe'
+        'C:\Program Files (x86)\NVDA\nvda.exe'
+    )
 
-$results.ChromePath = Find-GoogleChromeExecutable
-$results.ChromeInstalled = [bool]$results.ChromePath
-$results.FirefoxInstalled = Test-Path 'C:\Program Files\Mozilla Firefox\firefox.exe'
-$results.NvdaInstalled = Test-Path 'C:\Program Files (x86)\NVDA\nvda.exe'
+    return $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
 
-$rdpValue = (Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections').fDenyTSConnections
-$results.RdpEnabled = ($rdpValue -eq 0)
+function Invoke-EnvironmentVerification {
+    $results = [ordered]@{}
 
-$results.CoseeingIsAdmin = [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'coseeing' -ErrorAction SilentlyContinue)
-$results.UserIsNotAdmin = -not [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'user' -ErrorAction SilentlyContinue)
-$results.UserAccountExists = [bool](Get-LocalUser -Name 'user' -ErrorAction SilentlyContinue)
-$results.BaseInstalledUiCulture = [System.Globalization.CultureInfo]::InstalledUICulture.Name
-$results.DisplayLanguage = Get-SystemPreferredUILanguage
-$results.SystemLocale = (Get-WinSystemLocale).Name
-$results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -in @('zh-TW', 'zh-Hant-TW'))
-$results.SystemLocaleIsTraditionalChinese = ($results.SystemLocale -eq 'zh-TW')
+    $results.ChromePath = Find-GoogleChromeExecutable
+    $results.ChromeInstalled = [bool]$results.ChromePath
+    $results.FirefoxInstalled = Test-Path 'C:\Program Files\Mozilla Firefox\firefox.exe'
+    $nvdaPath = Find-NvdaExecutable
+    $results.NvdaInstalled = [bool]$nvdaPath
 
-$checks = @('ChromeInstalled','FirefoxInstalled','NvdaInstalled','RdpEnabled','CoseeingIsAdmin','UserIsNotAdmin','UserAccountExists','DisplayLanguageIsTraditionalChinese','SystemLocaleIsTraditionalChinese')
-$allPassed = -not ($checks | Where-Object { $results[$_] -ne $true })
-$results.AllChecksPassed = $allPassed
+    $rdpValue = (Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections').fDenyTSConnections
+    $results.RdpEnabled = ($rdpValue -eq 0)
 
-$json = $results | ConvertTo-Json -Compress
-Write-Output "VERIFY_RESULT_JSON=$json"
+    $results.CoseeingIsAdmin = [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'coseeing' -ErrorAction SilentlyContinue)
+    $results.UserIsNotAdmin = -not [bool](Get-LocalGroupMember -Group 'Administrators' -Member 'user' -ErrorAction SilentlyContinue)
+    $results.UserAccountExists = [bool](Get-LocalUser -Name 'user' -ErrorAction SilentlyContinue)
+    $results.BaseInstalledUiCulture = [System.Globalization.CultureInfo]::InstalledUICulture.Name
+    $results.DisplayLanguage = Get-SystemPreferredUILanguage
+    $results.SystemLocale = (Get-WinSystemLocale).Name
+    $results.DisplayLanguageIsTraditionalChinese = ($results.DisplayLanguage -in @('zh-TW', 'zh-Hant-TW'))
+    $results.SystemLocaleIsTraditionalChinese = ($results.SystemLocale -eq 'zh-TW')
 
-if (-not $allPassed) {
-    throw "Environment verification failed: $json"
+    $checks = @('ChromeInstalled','FirefoxInstalled','NvdaInstalled','RdpEnabled','CoseeingIsAdmin','UserIsNotAdmin','UserAccountExists','DisplayLanguageIsTraditionalChinese','SystemLocaleIsTraditionalChinese')
+    $allPassed = -not ($checks | Where-Object { $results[$_] -ne $true })
+    $results.AllChecksPassed = $allPassed
+
+    $json = $results | ConvertTo-Json -Compress
+    Write-Output "VERIFY_RESULT_JSON=$json"
+
+    if (-not $allPassed) {
+        throw "Environment verification failed: $json"
+    }
+}
+
+if (-not $SkipExecution) {
+    Invoke-EnvironmentVerification
 }
