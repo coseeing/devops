@@ -112,3 +112,73 @@ Describe 'bounded official download retries' {
         Should -Invoke Start-Sleep -Times 1 -ParameterFilter { $Seconds -eq 30 }
     }
 }
+
+Describe 'official product installers' {
+    BeforeEach {
+        $env:TEMP = $TestDrive
+        Mock New-Item
+        Mock Remove-Item
+        Mock Invoke-WebRequestWithRetry
+        Mock Assert-AuthenticodePublisher
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+        Mock Assert-InstallerExitCode
+    }
+
+    It 'downloads and silently installs Firefox zh-TW win64' {
+        Install-Firefox
+        Should -Invoke Invoke-WebRequestWithRetry -Times 1 -ParameterFilter {
+            $Uri.AbsoluteUri -eq 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-TW'
+        }
+        Should -Invoke Assert-AuthenticodePublisher -Times 1 -ParameterFilter {
+            $ProductName -eq 'Firefox' -and
+            $PublisherPattern -eq '(^|, )O=Mozilla Corporation(,|$)'
+        }
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            $ArgumentList.Count -eq 1 -and $ArgumentList[0] -eq '/S' -and $Wait -and $PassThru
+        }
+    }
+
+    It 'resolves and silently installs the official stable NVDA build' {
+        Mock Invoke-WebRequestWithRetry {
+            [pscustomobject]@{ Content = '<a href="nvda_2026.1.1.exe">download</a>' }
+        } -ParameterFilter { -not $OutFile }
+
+        Install-Nvda
+        Should -Invoke Invoke-WebRequestWithRetry -Times 1 -ParameterFilter {
+            $Uri.AbsoluteUri -eq 'https://download.nvaccess.org/releases/stable/' -and -not $OutFile
+        }
+        Should -Invoke Assert-AuthenticodePublisher -Times 1 -ParameterFilter {
+            $ProductName -eq 'NVDA' -and
+            $PublisherPattern -eq '(^|, )O=NV Access Limited(,|$)'
+        }
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            $ArgumentList.Count -eq 1 -and $ArgumentList[0] -eq '--install-silent' -and $Wait -and $PassThru
+        }
+    }
+}
+
+Describe 'workflow version output contract' {
+    It 'emits the three existing VERSION keys' {
+        Mock Test-Path { $true }
+        Mock Get-Item {
+            [pscustomobject]@{
+                VersionInfo = [pscustomobject]@{
+                    ProductVersion = '1.2.3'
+                    FileVersion = '1.2.3.0'
+                }
+            }
+        }
+        $executables = [ordered]@{
+            GOOGLECHROME = 'C:\Google\chrome.exe'
+            FIREFOX = 'C:\Mozilla Firefox\firefox.exe'
+            NVDA = 'C:\NVDA\nvda.exe'
+        }
+
+        $output = @(Write-InstalledSoftwareVersions -SoftwareExecutables $executables)
+
+        $output | Should -Contain 'VERSION_GOOGLECHROME=1.2.3'
+        $output | Should -Contain 'VERSION_FIREFOX=1.2.3'
+        $output | Should -Contain 'VERSION_NVDA=1.2.3'
+        @($output | Where-Object { $_ -like 'VERSION_*=*' }).Count | Should -Be 3
+    }
+}
