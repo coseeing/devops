@@ -28,7 +28,7 @@ reliable than using the localized base image.
    - Source: `Custom` → enter your office/VPN CIDR block (e.g. `203.0.113.0/24`) — do **not** use `0.0.0.0/0`.
    - Description: `Office VPN RDP access`
 6. **Outbound rules**: leave the default (all traffic allowed) — the instance needs outbound HTTPS for
-   Windows Update, Chocolatey, and the SSM agent.
+   Windows Update, Google, Mozilla, NV Access, and the SSM agent.
 7. **Tags**: `Name` = `windows-a11y-rdp`.
 8. Click **Create security group**. Copy the resulting **Security group ID** (e.g. `sg-0123456789abcdef0`).
 9. Record this value — it becomes the `SECURITY_GROUP_ID` GitHub variable in step 5.
