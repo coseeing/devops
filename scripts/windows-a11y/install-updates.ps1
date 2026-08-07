@@ -4,6 +4,41 @@ param()
 $ErrorActionPreference = 'Stop'
 $logPrefix = '[install-updates]'
 
+function ConvertTo-HResultHex {
+    param(
+        [Parameter(Mandatory)]
+        [long]$HResult
+    )
+
+    $unsignedValue = $HResult -band 0xffffffffL
+    return '0x{0:X8}' -f $unsignedValue
+}
+
+function Write-InstallationDiagnostics {
+    param(
+        [Parameter(Mandatory)]
+        $InstallResult,
+
+        [Parameter(Mandatory)]
+        $Updates,
+
+        [string]$Prefix = '[install-updates]'
+    )
+
+    $aggregateHResult = ConvertTo-HResultHex -HResult $InstallResult.HResult
+    Write-Output "$Prefix Install result code: $($InstallResult.ResultCode); HRESULT: $aggregateHResult"
+
+    for ($index = 0; $index -lt $Updates.Count; $index++) {
+        $update = $Updates[$index]
+        $updateResult = $InstallResult.GetUpdateResult($index)
+        $updateHResult = ConvertTo-HResultHex -HResult $updateResult.HResult
+        Write-Output (
+            "$Prefix Update result: $($update.Title); code: $($updateResult.ResultCode); " +
+            "HRESULT: $updateHResult; reboot required: $($updateResult.RebootRequired)"
+        )
+    }
+}
+
 Write-Output "$logPrefix Searching for updates..."
 $updateSession = New-Object -ComObject Microsoft.Update.Session
 $updateSearcher = $updateSession.CreateUpdateSearcher()
@@ -40,7 +75,7 @@ $installer = $updateSession.CreateUpdateInstaller()
 $installer.Updates = $updatesToInstall
 $installResult = $installer.Install()
 
-Write-Output "$logPrefix Install result code: $($installResult.ResultCode)"
+Write-InstallationDiagnostics -InstallResult $installResult -Updates $updatesToInstall
 Write-Output "$logPrefix Reboot required: $($installResult.RebootRequired)"
 
 if ($installResult.ResultCode -ne 2 -and $installResult.ResultCode -ne 3) {

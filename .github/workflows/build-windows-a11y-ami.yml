@@ -75,21 +75,7 @@ jobs:
 
       - name: Install Windows Updates (repeat until converged)
         run: |
-          for i in $(seq 1 5); do
-            OUTPUT=$(bash scripts/windows-a11y/ssm-run.sh "${{ steps.launch.outputs.instance_id }}" scripts/windows-a11y/install-updates.ps1 3600)
-            echo "${OUTPUT}"
-            if echo "${OUTPUT}" | grep -q "No updates found."; then
-              echo "No further updates."
-              break
-            fi
-            if echo "${OUTPUT}" | grep -q "REBOOT_REQUIRED=true"; then
-              echo "Rebooting instance for updates (pass ${i})..."
-              aws ec2 reboot-instances --instance-ids "${{ steps.launch.outputs.instance_id }}"
-              sleep 30
-              aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.instance_id }}"
-            fi
-          done
-          echo "WINDOWS_UPDATE_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+          bash scripts/windows-a11y/run-windows-updates.sh "${{ steps.launch.outputs.instance_id }}"
 
       - name: Install/update Chrome, Firefox, NVDA
         id: software
