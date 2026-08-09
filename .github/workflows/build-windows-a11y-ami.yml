@@ -134,13 +134,9 @@ jobs:
         id: create-image
         run: |
           AMI_NAME="windows-a11y-${{ github.event.inputs.ami_name }}"
-          IMAGE_ID=$(aws ec2 create-image \
-            --instance-id "${{ steps.launch.outputs.instance_id }}" \
-            --name "${AMI_NAME}" \
-            --description "Windows Server 2025 A11y test environment - ${AMI_NAME}" \
-            --query 'ImageId' --output text)
-          aws ec2 wait image-available --image-ids "${IMAGE_ID}"
-          echo "ami_id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+          bash scripts/windows-a11y/create-ami.sh \
+            "${{ steps.launch.outputs.instance_id }}" \
+            "${AMI_NAME}"
 
       - name: Tag AMI and snapshots
         run: |
