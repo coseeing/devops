@@ -1,29 +1,40 @@
-name: Launch Windows A11y EC2
+name: Manage Windows A11y EC2
 
 on:
   workflow_dispatch:
     inputs:
-      ami_name:
-        description: "AMI 版本標籤（需與 build-windows-a11y-ami 的 ami_name 相同）"
+      action:
+        description: "Operation to perform"
+        required: true
+        default: "launch"
+        type: choice
+        options:
+          - launch
+          - delete
+      stack_suffix:
+        description: "Stack suffix only. Example: anson-test creates windows-a11y-anson-test"
         required: true
         type: string
-      stack_name:
-        description: "CloudFormation stack name"
-        required: true
-        default: "windows-a11y"
+      confirm_stack_name:
+        description: "Delete only: enter the full name, including prefix (example: windows-a11y-anson-test)"
+        required: false
+        type: string
+      ami_name:
+        description: "Launch only: AMI version label used by build-windows-a11y-ami"
+        required: false
         type: string
       instance_name:
-        description: "EC2 Name tag"
+        description: "Launch only: EC2 Name tag"
         required: true
         default: "windows-a11y"
         type: string
       instance_type:
-        description: "EC2 instance type"
+        description: "Launch only: EC2 instance type"
         required: true
         default: "m5.xlarge"
         type: string
       disk_size:
-        description: "Root EBS volume size (GiB)"
+        description: "Launch only: root EBS volume size (GiB)"
         required: true
         default: "100"
         type: string
@@ -35,8 +46,42 @@ env:
   AWS_REGION: ap-northeast-1
 
 jobs:
+  validate:
+    name: validate stack operation
+    runs-on: ubuntu-latest
+    outputs:
+      stack_name: ${{ steps.stack.outputs.stack_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate request and resolve stack name
+        id: stack
+        env:
+          ACTION: ${{ inputs.action }}
+          AMI_NAME: ${{ inputs.ami_name }}
+          CONFIRM_STACK_NAME: ${{ inputs.confirm_stack_name }}
+          STACK_SUFFIX: ${{ inputs.stack_suffix }}
+        run: |
+          STACK_NAME=$(bash scripts/windows-a11y/validate-stack-operation.sh \
+            "${ACTION}" \
+            "${STACK_SUFFIX}" \
+            "${CONFIRM_STACK_NAME}" \
+            "${AMI_NAME}")
+
+          echo "Resolved stack name: ${STACK_NAME}"
+          echo "stack_name=${STACK_NAME}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Windows A11y EC2 request"
+            echo "- Action: \`${ACTION}\`"
+            echo "- Stack prefix: \`windows-a11y-\`"
+            echo "- Full stack name: \`${STACK_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   launch:
     name: launch ec2 from windows a11y ami
+    if: ${{ inputs.action == 'launch' }}
+    needs: validate
     environment: windows-a11y
     runs-on: ubuntu-latest
     permissions:
@@ -77,7 +122,7 @@ jobs:
           DISK_SIZE: ${{ inputs.disk_size }}
           INSTANCE_NAME: ${{ inputs.instance_name }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
-          STACK_NAME: ${{ inputs.stack_name }}
+          STACK_NAME: ${{ needs.validate.outputs.stack_name }}
         run: |
           aws cloudformation deploy \
             --stack-name "${STACK_NAME}" \
@@ -96,7 +141,7 @@ jobs:
       - name: Wait for instance and publish connection details
         env:
           AMI_ID: ${{ steps.ami.outputs.image_id }}
-          STACK_NAME: ${{ inputs.stack_name }}
+          STACK_NAME: ${{ needs.validate.outputs.stack_name }}
         run: |
           INSTANCE_ID=$(aws cloudformation describe-stacks \
             --stack-name "${STACK_NAME}" \
@@ -114,4 +159,48 @@ jobs:
             echo "- Instance: \`${INSTANCE_ID}\`"
             echo "- Public IP: \`${PUBLIC_IP}\`"
             echo "- Stack: \`${STACK_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  delete:
+    name: delete windows a11y stack
+    if: ${{ inputs.action == 'delete' }}
+    needs: validate
+    environment: windows-a11y
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify and delete CloudFormation stack
+        env:
+          STACK_NAME: ${{ needs.validate.outputs.stack_name }}
+        run: |
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          echo "Deleting ${STACK_NAME} (current status: ${STACK_STATUS})."
+          aws cloudformation delete-stack --stack-name "${STACK_NAME}"
+
+          if ! aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}"; then
+            echo "::error::CloudFormation did not complete deletion of ${STACK_NAME}."
+            aws cloudformation describe-stack-events \
+              --stack-name "${STACK_NAME}" \
+              --max-items 10 \
+              --query 'StackEvents[].{Time:Timestamp,Status:ResourceStatus,Type:ResourceType,Reason:ResourceStatusReason}' \
+              --output table || true
+            exit 1
+          fi
+
+          {
+            echo "## Windows A11y stack deleted"
+            echo "- Stack: \`${STACK_NAME}\`"
+            echo "- Previous status: \`${STACK_STATUS}\`"
           } >> "$GITHUB_STEP_SUMMARY"

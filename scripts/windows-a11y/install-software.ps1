@@ -1,19 +1,110 @@
 [CmdletBinding()]
-param()
+param([switch]$SkipExecution)
 
 $ErrorActionPreference = 'Stop'
 $logPrefix = '[install-software]'
+$nvdaStableBaseUri = [Uri]'https://download.nvaccess.org/releases/stable/'
 
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-    Write-Output "$logPrefix Installing Chocolatey..."
-    Set-ExecutionPolicy Bypass -Scope Process -Force
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-    $env:Path = "$env:Path;C:\ProgramData\chocolatey\bin"
+function Get-FirefoxInstallerUri {
+    return [Uri]'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-TW'
 }
 
-$chocoPath = (Get-Command choco -ErrorAction Stop).Source
-$successfulExitCodes = @(0, 2, 1641, 3010)
+function Get-NvdaStableInstallerUri {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [Uri]$BaseUri = $nvdaStableBaseUri
+    )
+
+    $hrefPattern = 'href=["''](?<href>nvda_(?<version>\d{4}\.\d+(?:\.\d+)?)\.exe)["'']'
+    $matches = @([regex]::Matches($Content, $hrefPattern, 'IgnoreCase'))
+    if ($matches.Count -ne 1) {
+        throw "$logPrefix Expected exactly one numeric stable NVDA installer, found $($matches.Count)."
+    }
+    return [Uri]::new($BaseUri, $matches[0].Groups['href'].Value)
+}
+
+function Find-NvdaExecutable {
+    $candidates = @(
+        'C:\Program Files\NVDA\nvda.exe'
+        'C:\Program Files (x86)\NVDA\nvda.exe'
+    )
+
+    return $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+
+function Invoke-WebRequestWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][Uri]$Uri,
+        [string]$OutFile,
+        [string]$Operation = 'download',
+        [ValidateRange(1, 3)][int]$MaxAttempts = 3
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            $parameters = @{ Uri = $Uri; UseBasicParsing = $true }
+            if ($OutFile) { $parameters.OutFile = $OutFile }
+            return Invoke-WebRequest @parameters
+        } catch {
+            if ($attempt -eq $MaxAttempts) {
+                throw "$logPrefix Download from $Uri failed after $MaxAttempts attempts: $($_.Exception.Message)"
+            }
+            $delaySeconds = 15 * $attempt
+            Write-Warning "$logPrefix $Operation attempt $attempt of $MaxAttempts failed; retrying in $delaySeconds seconds."
+            Start-Sleep -Seconds $delaySeconds
+        }
+    }
+}
+
+function Assert-AuthenticodePublisher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ProductName,
+        [Parameter(Mandatory = $true)][string]$PublisherPattern
+    )
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    $publisher = if ($signature.SignerCertificate) {
+        $signature.SignerCertificate.Subject
+    } else {
+        ''
+    }
+    if ($signature.Status -ne 'Valid' -or $publisher -notmatch $PublisherPattern) {
+        throw "$logPrefix $ProductName signature verification failed (status: $($signature.Status), publisher: $publisher)"
+    }
+}
+
+function Assert-InstallerExitCode {
+    param([string]$ProductName, [int]$ExitCode)
+    if ($ExitCode -ne 0) {
+        throw "$logPrefix $ProductName installation failed with exit code $ExitCode."
+    }
+}
+
+function Install-Firefox {
+    $downloadDirectory = Join-Path $env:TEMP 'windows-a11y-installers'
+    $installerPath = Join-Path $downloadDirectory 'firefox-zh-TW-win64-latest.exe'
+    New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+    Invoke-WebRequestWithRetry -Uri (Get-FirefoxInstallerUri) -OutFile $installerPath `
+        -Operation 'Firefox installer download'
+    Assert-AuthenticodePublisher -Path $installerPath -ProductName 'Firefox' `
+        -PublisherPattern '(^|, )O=Mozilla Corporation(,|$)'
+    $process = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru
+    Assert-InstallerExitCode -ProductName 'Firefox' -ExitCode $process.ExitCode
+    Remove-Item -LiteralPath $installerPath -Force
+}
+
+function Install-Nvda {
+    $downloadDirectory = Join-Path $env:TEMP 'windows-a11y-installers'
+    New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+    $listing = Invoke-WebRequestWithRetry -Uri $nvdaStableBaseUri -Operation 'NVDA stable listing download'
+    $installerUri = Get-NvdaStableInstallerUri -Content $listing.Content
+    $installerPath = Join-Path $downloadDirectory ([IO.Path]::GetFileName($installerUri.AbsolutePath))
+    Invoke-WebRequestWithRetry -Uri $installerUri -OutFile $installerPath -Operation 'NVDA installer download'
+    Assert-AuthenticodePublisher -Path $installerPath -ProductName 'NVDA' `
+        -PublisherPattern '(^|, )O=NV Access Limited(,|$)'
+    $process = Start-Process -FilePath $installerPath -ArgumentList @('--install-silent') -Wait -PassThru
+    Assert-InstallerExitCode -ProductName 'NVDA' -ExitCode $process.ExitCode
+    Remove-Item -LiteralPath $installerPath -Force
+}
 
 function Install-GoogleChrome {
     $installerUri = 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi'
@@ -28,7 +119,7 @@ function Install-GoogleChrome {
 
     # The Chrome Enterprise URL always points at the current stable MSI, so a
     # static checksum would become stale. Verify Google's code-signing identity
-    # instead of bypassing integrity checks with Chocolatey's --ignore-checksums.
+    # rather than bypassing integrity checks.
     $signature = Get-AuthenticodeSignature -FilePath $installerPath
     $publisher = $signature.SignerCertificate.Subject
     if ($signature.Status -ne 'Valid' -or $publisher -notmatch '(^|, )O=Google LLC(,|$)') {
@@ -54,36 +145,6 @@ function Install-GoogleChrome {
     }
 
     Remove-Item -Path $installerPath -Force
-}
-
-function Install-OrUpgradePackage {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Package,
-
-        [int]$MaxAttempts = 3
-    )
-
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        Write-Output "$logPrefix Installing/updating $Package (attempt $attempt of $MaxAttempts)..."
-
-        # Do not discard Chocolatey's output: it contains the installer-specific
-        # error that is needed to diagnose failures from the SSM command log.
-        & $chocoPath upgrade $Package -y --no-progress --execution-timeout=1200 --ignore-detected-reboot
-        $exitCode = $LASTEXITCODE
-
-        if ($exitCode -in $successfulExitCodes) {
-            return
-        }
-
-        if ($attempt -lt $MaxAttempts) {
-            $retryDelay = 15 * $attempt
-            Write-Warning "$logPrefix choco upgrade $Package failed with exit code $exitCode; retrying in $retryDelay seconds."
-            Start-Sleep -Seconds $retryDelay
-        }
-    }
-
-    throw "$logPrefix choco upgrade $Package failed after $MaxAttempts attempts (last exit code: $exitCode)"
 }
 
 function Find-GoogleChromeExecutable {
@@ -124,32 +185,46 @@ function Wait-GoogleChromeExecutable {
     return $null
 }
 
-$packages = @('firefox', 'nvda')
-foreach ($package in $packages) {
-    Install-OrUpgradePackage -Package $package
-}
-
-Install-GoogleChrome
-
-Write-Output "$logPrefix Installed package versions:"
-$chromeExecutable = Wait-GoogleChromeExecutable
-if (-not $chromeExecutable) {
-    $installerLogPath = Join-Path $env:TEMP 'windows-a11y-installers\googlechrome-install.log'
-    $logTail = (Get-Content -LiteralPath $installerLogPath -Tail 40 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
-    throw "$logPrefix GOOGLECHROME executable was not found after waiting for the MSI installation to settle. MSI log: $installerLogPath`n$logTail"
-}
-
-$softwareExecutables = [ordered]@{
-    GOOGLECHROME = $chromeExecutable
-    FIREFOX = 'C:\Program Files\Mozilla Firefox\firefox.exe'
-    NVDA = 'C:\Program Files (x86)\NVDA\nvda.exe'
-}
-foreach ($software in $softwareExecutables.GetEnumerator()) {
-    if (-not (Test-Path $software.Value)) {
-        throw "$logPrefix $($software.Key) executable was not found at $($software.Value)"
+function Write-InstalledSoftwareVersions {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Collections.IDictionary]$SoftwareExecutables
+    )
+    foreach ($software in $SoftwareExecutables.GetEnumerator()) {
+        if (-not (Test-Path $software.Value)) {
+            throw "$logPrefix $($software.Key) executable was not found at $($software.Value)"
+        }
+        $versionInfo = (Get-Item $software.Value).VersionInfo
+        $version = if ($versionInfo.ProductVersion) {
+            $versionInfo.ProductVersion
+        } else {
+            $versionInfo.FileVersion
+        }
+        Write-Output "VERSION_$($software.Key)=$version"
     }
+}
 
-    $versionInfo = (Get-Item $software.Value).VersionInfo
-    $version = if ($versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $versionInfo.FileVersion }
-    Write-Output "VERSION_$($software.Key)=$version"
+function Invoke-InstallSoftware {
+    Install-Firefox
+    Install-Nvda
+    Install-GoogleChrome
+
+    Write-Output "$logPrefix Installed package versions:"
+    $chromeExecutable = Wait-GoogleChromeExecutable
+    if (-not $chromeExecutable) {
+        $installerLogPath = Join-Path $env:TEMP 'windows-a11y-installers\googlechrome-install.log'
+        $logTail = (Get-Content -LiteralPath $installerLogPath -Tail 40 `
+            -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+        throw "$logPrefix GOOGLECHROME executable was not found after waiting for the MSI installation to settle. MSI log: $installerLogPath`n$logTail"
+    }
+    $softwareExecutables = [ordered]@{
+        GOOGLECHROME = $chromeExecutable
+        FIREFOX = 'C:\Program Files\Mozilla Firefox\firefox.exe'
+        NVDA = Find-NvdaExecutable
+    }
+    Write-InstalledSoftwareVersions -SoftwareExecutables $softwareExecutables
+}
+
+if (-not $SkipExecution) {
+    Invoke-InstallSoftware
 }
