@@ -1,0 +1,58 @@
+- name: Deploy Windows VM portal
+  hosts: all
+  become: true
+  vars_files:
+    - common/vars.yml
+  vars:
+    docker_compose_dir: /data/vms-portal
+    traefik_certresolver: vms-portal
+    traefik_router_prefix: vms-portal-service--
+    image_name: "{{ ecr_location }}/vms-portal:{{ deploy_tag }}"
+    project_name: vms-portal
+  collections:
+    - community.docker
+    - community.aws
+  tasks:
+    - name: Include common preparation
+      include_tasks: common/pre-common.yml
+
+    - name: Write portal environment
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        mode: "0600"
+        content: |
+          AWS_REGION=ap-northeast-1
+          AUTH_SECRET_ID={{ auth_secret_id }}
+          TRUSTED_PROXY_IPS=127.0.0.1
+
+    - name: Write portal Compose file
+      copy:
+        dest: "{{ docker_compose_dir }}/docker-compose.yml"
+        mode: "0644"
+        content: |
+          services:
+            vms-portal:
+              image: {{ image_name }}
+              restart: always
+              env_file: .env
+              read_only: true
+              tmpfs:
+                - /tmp:size=16m,mode=1777
+              security_opt:
+                - no-new-privileges:true
+              networks:
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry'] + traefik_labels_list) | to_json }}
+              logging:
+                driver: awslogs
+                options:
+                  awslogs-region: ap-northeast-1
+                  awslogs-group: /coseeing/vms-portal
+                  awslogs-create-group: "false"
+          networks:
+            entry:
+              external: true
+              name: entry
+
+    - name: Include common deployment
+      include_tasks: common/post-common.yml

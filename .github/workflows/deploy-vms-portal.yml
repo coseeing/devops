@@ -1,0 +1,81 @@
+name: Validate or deploy Windows VM portal
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Validate only or deploy
+        required: true
+        type: choice
+        options: [validate, deploy]
+      stack_name:
+        description: Existing Linux EC2 CloudFormation stack
+        required: true
+        default: coseeing-stack-v2
+      image_tag:
+        description: Immutable image tag
+        required: true
+      auth_secret_id:
+        description: Secrets Manager name or ARN
+        required: true
+      confirm_domain:
+        description: For deploy, type vms.coseeing.org exactly
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+        working-directory: vms_portal
+      - run: uv run pytest
+        working-directory: vms_portal
+      - run: docker build -t vms-portal:validate vms_portal
+
+  deploy:
+    if: "inputs.action == 'deploy' && inputs.confirm_domain == 'vms.coseeing.org'"
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: a11y-village-production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Validate inputs
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          [[ "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ECR: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com/vms-portal
+        run: |
+          docker build -t "$ECR:$IMAGE_TAG" vms_portal
+          docker push "$ECR:$IMAGE_TAG"
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+      - name: Install Ansible
+        run: pip install ansible boto3 botocore && ansible-galaxy collection install community.docker community.aws
+      - name: Deploy with Ansible
+        env:
+          STACK_NAME: ${{ inputs.stack_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          AUTH_SECRET_ID: ${{ inputs.auth_secret_id }}
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          HOST_IP=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='InstancePublicIp'].OutputValue" --output text)
+          printf '[portal]\n%s ansible_user=ubuntu\n' "$HOST_IP" > inventory
+          ansible-playbook -i inventory -e "deploy_tag=$IMAGE_TAG" -e "auth_secret_id=$AUTH_SECRET_ID" -e "deploy_domain=vms.coseeing.org" ansible_yaml/vms-portal-playbook.yml
