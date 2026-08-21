@@ -41,7 +41,27 @@ OIDC role 必須允許 workflow 執行下列範圍：
 
 這是 bootstrap 的權限；Portal container 本身只使用 `cloudformation/vms-portal-access-template.yml` 內的受限 runtime policy。
 
-### 3. DNS、Windows tag 與 Cost Explorer
+### 3. 確認 Linux EC2 instance profile 權限
+
+承載 Portal/Traefik 的 Linux EC2 必須綁定一個包含 IAM role `coseeing-ec2-common` 的 instance profile。`cloudformation/common-ec2-instance-template.yml` 建立的 EC2 已經使用此 role；若是其他既有 EC2，請到 **EC2** → **Instances** → 選擇該 instance → **Actions** → **Security** → **Modify IAM role** 確認。
+
+第一次執行 `deploy` workflow 時，Action 會建立或更新 CloudFormation stack `vms-portal-access`，並自動將 inline policy `vms-portal-runtime` 掛到 `coseeing-ec2-common`。不需要手動貼 IAM JSON。該 policy 包含：
+
+| AWS 權限 | Resource 限制 | 用途 |
+| --- | --- | --- |
+| `ec2:DescribeInstances` | `*` | admin 列出 VM、user 依 Public IPv4 查詢，以及每次開關機前重新驗證 tag/IP/狀態。此 API 不支援限制到單一 instance ARN。 |
+| `ec2:StartInstances`、`ec2:StopInstances` | 本帳號、本 Region 的 EC2 instance ARN，另要求 `VmPortalManaged=true` | 只允許控制明確交由 Portal 管理的 Windows VM。 |
+| `secretsmanager:DescribeSecret`、`secretsmanager:GetSecretValue` | 建立部署時指定的單一 Secret ARN | 啟動與定期更新共用登入帳密；Secret 只保留於記憶體 cache。 |
+| `ce:GetCostAndUsageWithResources` | `*` | 查詢每台 EC2 最近 14 天的 Cost Explorer resource-level cost；此 API 不支援 resource ARN 限制。 |
+| `logs:CreateLogStream`、`logs:PutLogEvents` | `/coseeing/vms-portal` log group 內的 stream | Docker `awslogs` driver 寫入登入及開關機 audit log。 |
+| `ecr:GetAuthorizationToken` | `*` | Linux EC2 登入 private ECR；此 API 不支援 repository ARN 限制。 |
+| `ecr:BatchCheckLayerAvailability`、`ecr:GetDownloadUrlForLayer`、`ecr:BatchGetImage` | 只限 `vms-portal` repository ARN | 拉取 Portal Docker image，不包含 push、刪除或管理 repository 的權限。 |
+
+Linux EC2 不需要 `ec2:*`、`iam:*`、`secretsmanager:*` 或 ECR push 權限。建立 ECR、push image、部署 CloudFormation 與修改 metadata options 是 GitHub OIDC role 的 bootstrap 工作，不是 EC2 runtime role 的權限。
+
+部署後可在 AWS Console 的 **IAM** → **Roles** → `coseeing-ec2-common` → **Permissions** 確認存在 `vms-portal-runtime`。若 role 名稱不同，需先調整 workflow 的 `RUNTIME_ROLE_NAME`，不要額外建立一份過度寬鬆的 policy。
+
+### 4. DNS、Windows tag 與 Cost Explorer
 
 - DNS：將 `vms.coseeing.org` 的 A/AAAA 記錄指向既有 Traefik Linux EC2。
 - Windows VM：新版 `windows-a11y-instance-template.yml` 已自動加入 `VmPortalManaged=true`。既有 VM 必須補上相同 tag，否則 Portal 不會顯示或控制它。

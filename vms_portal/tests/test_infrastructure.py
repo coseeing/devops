@@ -45,6 +45,27 @@ def test_access_policy_restricts_mutation_by_tag() -> None:
     assert describe["Resource"] == "*"
 
 
+def test_access_policy_allows_pull_only_from_portal_ecr_repository() -> None:
+    template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
+    statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][
+        "Statement"
+    ]
+
+    token = next(
+        item for item in statements if item["Action"] == ["ecr:GetAuthorizationToken"]
+    )
+    assert token["Resource"] == "*"
+
+    pull = next(item for item in statements if "ecr:BatchGetImage" in item["Action"])
+    assert set(pull["Action"]) == {
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+    }
+    assert pull["Resource"].endswith(":repository/vms-portal")
+    assert pull["Resource"] != "*"
+
+
 def test_deployment_is_non_root_read_only_and_uses_exact_domain() -> None:
     dockerfile = (ROOT / "vms_portal/Dockerfile").read_text()
     playbook = (ROOT / "ansible_yaml/vms-portal-playbook.yml").read_text()
