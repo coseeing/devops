@@ -66,3 +66,32 @@ def test_deploy_workflow_requires_exact_domain_confirmation() -> None:
         deploy["if"]
         == "inputs.action == 'deploy' && inputs.confirm_domain == 'vms.coseeing.org'"
     )
+
+
+def test_deploy_workflow_derives_immutable_image_tag_and_defaults_secret() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/deploy-vms-portal.yml").read_text()
+    )
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+
+    assert "image_tag" not in inputs
+    assert inputs["auth_secret_id"]["default"] == "prod/vms-portal/auth"
+    assert workflow["jobs"]["deploy"]["env"]["IMAGE_TAG"] == "${{ github.sha }}"
+
+
+def test_deploy_workflow_bootstraps_aws_and_checks_health() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/deploy-vms-portal.yml").read_text()
+    )
+    deploy = workflow["jobs"]["deploy"]
+    steps = {step.get("name"): step for step in deploy["steps"]}
+
+    prepare = steps["Prepare AWS infrastructure"]["run"]
+    assert "aws secretsmanager describe-secret" in prepare
+    assert "aws ecr create-repository" in prepare
+    assert "aws cloudformation deploy" in prepare
+    assert "aws ec2 modify-instance-metadata-options" in prepare
+
+    verify = steps["Verify portal health"]["run"]
+    assert "https://vms.coseeing.org/health/live" in verify
+    assert "https://vms.coseeing.org/health/ready" in verify
