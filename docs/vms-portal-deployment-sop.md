@@ -45,7 +45,7 @@ OIDC role 必須允許 workflow 執行下列範圍：
 
 承載 Portal/Traefik 的 Linux EC2 必須綁定一個包含 IAM role `coseeing-ec2-common` 的 instance profile。`cloudformation/common-ec2-instance-template.yml` 建立的 EC2 已經使用此 role；若是其他既有 EC2，請到 **EC2** → **Instances** → 選擇該 instance → **Actions** → **Security** → **Modify IAM role** 確認。
 
-第一次執行 `deploy` workflow 時，Action 會建立或更新 CloudFormation stack `vms-portal-access`，並自動將 inline policy `vms-portal-runtime` 掛到 `coseeing-ec2-common`。不需要手動貼 IAM JSON。該 policy 包含：
+第一次執行 `deploy` workflow 時，Action 會建立或更新 CloudFormation stack `vms-portal-access`，並自動將 inline policy `vms-portal-runtime` 掛到 `coseeing-ec2-common`。不需要手動貼 IAM JSON。該 policy 只包含 Portal 特有權限：
 
 | AWS 權限 | Resource 限制 | 用途 |
 | --- | --- | --- |
@@ -54,8 +54,15 @@ OIDC role 必須允許 workflow 執行下列範圍：
 | `secretsmanager:DescribeSecret`、`secretsmanager:GetSecretValue` | 建立部署時指定的單一 Secret ARN | 啟動與定期更新共用登入帳密；Secret 只保留於記憶體 cache。 |
 | `ce:GetCostAndUsageWithResources` | `*` | 查詢每台 EC2 最近 14 天的 Cost Explorer resource-level cost；此 API 不支援 resource ARN 限制。 |
 | `logs:CreateLogStream`、`logs:PutLogEvents` | `/coseeing/vms-portal` log group 內的 stream | Docker `awslogs` driver 寫入登入及開關機 audit log。 |
-| `ecr:GetAuthorizationToken` | `*` | Linux EC2 登入 private ECR；此 API 不支援 repository ARN 限制。 |
-| `ecr:BatchCheckLayerAvailability`、`ecr:GetDownloadUrlForLayer`、`ecr:BatchGetImage` | 只限 `vms-portal` repository ARN | 拉取 Portal Docker image，不包含 push、刪除或管理 repository 的權限。 |
+
+同一台 EC2 上的既有服務已經從 private ECR 拉取 image，因此 `coseeing-ec2-common` 的共用基礎 policy 應已具備 `ecr:GetAuthorizationToken`、`ecr:BatchCheckLayerAvailability`、`ecr:GetDownloadUrlForLayer` 與 `ecr:BatchGetImage`。這些權限不是 Portal 特有權限，不由 `vms-portal-access` stack 重複管理。可登入該 EC2 驗證目前 instance profile 是否仍能取得 ECR token：
+
+```bash
+aws ecr get-login-password --region ap-northeast-1 >/dev/null \
+  && echo "ECR authentication OK"
+```
+
+若上式成功，Portal 可沿用既有 ECR pull 權限；若失敗，應修正 EC2 的共用 ECR read policy，而不是把 ECR 權限加入 `vms-portal-runtime`。共用 policy 應限制 image read 到實際使用的 repositories；只有 `ecr:GetAuthorizationToken` 因 AWS API 限制使用 `Resource: "*"`。
 
 Linux EC2 不需要 `ec2:*`、`iam:*`、`secretsmanager:*` 或 ECR push 權限。建立 ECR、push image、部署 CloudFormation 與修改 metadata options 是 GitHub OIDC role 的 bootstrap 工作，不是 EC2 runtime role 的權限。
 

@@ -48,18 +48,6 @@ Resources:
               - secretsmanager:DescribeSecret
               - secretsmanager:GetSecretValue
             Resource: !Ref AuthSecretArn
-          - Sid: AuthenticateToEcr
-            Effect: Allow
-            Action:
-              - ecr:GetAuthorizationToken
-            Resource: "*"
-          - Sid: PullPortalImage
-            Effect: Allow
-            Action:
-              - ecr:BatchCheckLayerAvailability
-              - ecr:GetDownloadUrlForLayer
-              - ecr:BatchGetImage
-            Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/vms-portal
           - Sid: ReadResourceCosts
             Effect: Allow
             Action:
