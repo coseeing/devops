@@ -128,7 +128,7 @@
 
 - name: Load Traefik source config
   set_fact:
-    traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/{{ project_name }}.yml') | from_yaml }}"
+    traefik_source_config: "{{ lookup('file', playbook_dir + '/extra/' + project_name + '.yml') | from_yaml }}"
 
 - name: Transform Traefik config (placeholders -> prefix -> labels)
   set_fact:
