@@ -19,6 +19,7 @@ vms-portal-secret = "vms_portal.cli:main"
 
 [dependency-groups]
 dev = [
+  "ansible-core>=2.21,<2.22",
   "httpx>=0.28,<1",
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
