@@ -51,6 +51,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Ref InstanceName
+        - Key: VmPortalManaged
+          Value: "true"
 
 Outputs:
   InstanceId:

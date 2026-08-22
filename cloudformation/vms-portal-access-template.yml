@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Least-privilege runtime access for the Windows VM portal
+
+Parameters:
+  ExistingRoleName:
+    Type: String
+    Default: coseeing-ec2-common
+  AuthSecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws:secretsmanager:ap-northeast-1:[0-9]{12}:secret:.+$'
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+
+Resources:
+  AuditLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /coseeing/vms-portal
+      RetentionInDays: !Ref LogRetentionDays
+
+  PortalPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: vms-portal-runtime
+      Roles:
+        - !Ref ExistingRoleName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DescribeInstances
+            Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+            Resource: "*"
+          - Sid: StartStopManagedInstances
+            Effect: Allow
+            Action:
+              - ec2:StartInstances
+              - ec2:StopInstances
+            Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/VmPortalManaged: "true"
+          - Sid: ReadPortalAuthSecret
+            Effect: Allow
+            Action:
+              - secretsmanager:DescribeSecret
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AuthSecretArn
+          - Sid: ReadResourceCosts
+            Effect: Allow
+            Action:
+              - ce:GetCostAndUsageWithResources
+            Resource: "*"
+          - Sid: WritePortalLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub ${AuditLogGroup.Arn}:*
+
+Outputs:
+  LogGroupName:
+    Value: !Ref AuditLogGroup

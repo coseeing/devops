@@ -1,0 +1,156 @@
+name: Validate or deploy Windows VM portal
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Validate only or deploy
+        required: true
+        type: choice
+        options: [validate, deploy]
+      stack_name:
+        description: Existing Linux EC2 CloudFormation stack
+        required: true
+        default: coseeing-stack-v2
+      auth_secret_id:
+        description: Secrets Manager name or ARN
+        required: true
+        default: prod/vms-portal/auth
+      confirm_domain:
+        description: For deploy, type vms.coseeing.org exactly
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+        working-directory: vms_portal
+      - run: uv run pytest
+        working-directory: vms_portal
+      - run: docker build -t vms-portal:validate vms_portal
+
+  deploy:
+    if: "inputs.action == 'deploy' && inputs.confirm_domain == 'vms.coseeing.org'"
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: a11y-village-production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-northeast-1
+      ECR_REGISTRY: 622913514517.dkr.ecr.ap-northeast-1.amazonaws.com
+      ECR_REPOSITORY: vms-portal
+      IMAGE_TAG: ${{ github.sha }}
+      ACCESS_STACK_NAME: vms-portal-access
+      RUNTIME_ROLE_NAME: coseeing-ec2-common
+      AUTH_SECRET_ID: ${{ inputs.auth_secret_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Prepare AWS infrastructure
+        id: prepare
+        env:
+          STACK_NAME: ${{ inputs.stack_name }}
+        run: |
+          set -euo pipefail
+
+          SECRET_ARN=$(aws secretsmanager describe-secret \
+            --secret-id "$AUTH_SECRET_ID" \
+            --query ARN \
+            --output text)
+
+          if ! aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
+            aws ecr create-repository \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-scanning-configuration scanOnPush=true \
+              --image-tag-mutability IMMUTABLE >/dev/null
+          fi
+
+          aws cloudformation deploy \
+            --stack-name "$ACCESS_STACK_NAME" \
+            --template-file cloudformation/vms-portal-access-template.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              ExistingRoleName="$RUNTIME_ROLE_NAME" \
+              AuthSecretArn="$SECRET_ARN" \
+              LogRetentionDays=90 \
+            --no-fail-on-empty-changeset
+
+          STACK_OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
+          HOST_IP=$(jq -r '.[] | select(.OutputKey == "InstancePublicIp") | .OutputValue' <<<"$STACK_OUTPUTS")
+          INSTANCE_ID=$(jq -r '.[] | select(.OutputKey == "InstanceId") | .OutputValue' <<<"$STACK_OUTPUTS")
+
+          [[ "$HOST_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+          [[ "$INSTANCE_ID" =~ ^i-[a-f0-9]+$ ]]
+
+          METADATA=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].MetadataOptions' \
+            --output json)
+          if [[ $(jq -r '.HttpTokens' <<<"$METADATA") != required ]] || \
+             [[ $(jq -r '.HttpPutResponseHopLimit' <<<"$METADATA") != 2 ]]; then
+            aws ec2 modify-instance-metadata-options \
+              --instance-id "$INSTANCE_ID" \
+              --http-tokens required \
+              --http-put-response-hop-limit 2 >/dev/null
+          fi
+
+          echo "host_ip=$HOST_IP" >> "$GITHUB_OUTPUT"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+          ECR="$ECR_REGISTRY/$ECR_REPOSITORY"
+          if aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Reusing existing immutable image $ECR:$IMAGE_TAG"
+          else
+            docker build -t "$ECR:$IMAGE_TAG" vms_portal
+            docker push "$ECR:$IMAGE_TAG"
+          fi
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+      - name: Install Ansible
+        run: pip install ansible boto3 botocore && ansible-galaxy collection install community.docker community.aws
+      - name: Deploy with Ansible
+        env:
+          HOST_IP: ${{ steps.prepare.outputs.host_ip }}
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          set -euo pipefail
+          printf '[portal]\n%s ansible_user=ubuntu\n' "$HOST_IP" > inventory
+          ansible-playbook -i inventory -e "deploy_tag=$IMAGE_TAG" -e "auth_secret_id=$AUTH_SECRET_ID" -e "deploy_domain=vms.coseeing.org" ansible_yaml/vms-portal-playbook.yml
+      - name: Verify portal health
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+            https://vms.coseeing.org/health/live
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+            https://vms.coseeing.org/health/ready
+      - name: Deployment summary
+        run: |
+          {
+            echo '### Windows VM Portal deployed'
+            echo
+            echo "- URL: https://vms.coseeing.org"
+            echo "- Image: \`$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\`"
+            echo "- Linux EC2: \`${{ steps.prepare.outputs.instance_id }}\`"
+            echo "- Auth secret: \`$AUTH_SECRET_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"

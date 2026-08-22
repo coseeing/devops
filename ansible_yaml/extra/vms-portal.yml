@@ -1,0 +1,7 @@
+http:
+  routers:
+    https:
+      rule: Host(`vms.coseeing.org`)
+      entrypoints: websecure
+      tls:
+        certresolver: (`certresolver`)
