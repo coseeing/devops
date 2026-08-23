@@ -46,6 +46,23 @@ def instance(
     }
 
 
+def managed_address(*, created_at: str = "2026-08-20T00:00:00Z"):
+    return {
+        "AllocationId": "eipalloc-1234567890abcdef0",
+        "AssociationId": "eipassoc-1234567890abcdef0",
+        "Domain": "vpc",
+        "InstanceId": "i-1234567890abcdef0",
+        "NetworkInterfaceId": "eni-1234567890abcdef0",
+        "NetworkInterfaceOwnerId": "123456789012",
+        "PrivateIpAddress": "10.0.0.4",
+        "PublicIp": "198.51.100.9",
+        "Tags": [
+            {"Key": "VmPortalManaged", "Value": "true"},
+            {"Key": "VmPortalCreatedAt", "Value": created_at},
+        ],
+    }
+
+
 def test_list_managed_uses_tag_and_active_state_filters() -> None:
     ec2 = client()
     stubber = Stubber(ec2)
@@ -61,13 +78,35 @@ def test_list_managed_uses_tag_and_active_state_filters() -> None:
     stubber.add_response(
         "describe_instances", {"Reservations": [{"Instances": [instance()]}]}, expected
     )
+    stubber.add_response(
+        "describe_addresses",
+        {"Addresses": [managed_address()]},
+        {"Filters": [{"Name": "tag:VmPortalManaged", "Values": ["true"]}]},
+    )
 
     with stubber:
         result = Ec2Service(ec2).list_managed()
 
     assert [
-        (vm.instance_id, vm.name, str(vm.public_ip), vm.state) for vm in result
-    ] == [("i-1234567890abcdef0", "windows-a11y-demo", "198.51.100.9", "running")]
+        (
+            vm.instance_id,
+            vm.name,
+            str(vm.public_ip),
+            vm.state,
+            vm.eip_allocation_id,
+            vm.eip_created_at,
+        )
+        for vm in result
+    ] == [
+        (
+            "i-1234567890abcdef0",
+            "windows-a11y-demo",
+            "198.51.100.9",
+            "running",
+            "eipalloc-1234567890abcdef0",
+            datetime(2026, 8, 20, tzinfo=UTC),
+        )
+    ]
 
 
 def test_user_lookup_requires_exact_public_ip_and_tag() -> None:
@@ -86,11 +125,46 @@ def test_user_lookup_requires_exact_public_ip_and_tag() -> None:
     stubber.add_response(
         "describe_instances", {"Reservations": [{"Instances": [instance()]}]}, expected
     )
+    stubber.add_response(
+        "describe_addresses",
+        {"Addresses": [managed_address()]},
+        {"Filters": [{"Name": "tag:VmPortalManaged", "Values": ["true"]}]},
+    )
 
     with stubber:
         found = Ec2Service(ec2).find_managed_by_public_ip(IPv4Address("198.51.100.9"))
 
-    assert found is not None and found.instance_id == "i-1234567890abcdef0"
+    assert found is not None
+    assert found.instance_id == "i-1234567890abcdef0"
+    assert found.eip_allocation_id == "eipalloc-1234567890abcdef0"
+
+
+def test_eip_metadata_is_optional_and_malformed_timestamp_is_ignored() -> None:
+    ec2 = client()
+    stubber = Stubber(ec2)
+    expected = {
+        "Filters": [
+            {"Name": "tag:VmPortalManaged", "Values": ["true"]},
+            {
+                "Name": "instance-state-name",
+                "Values": ["pending", "running", "stopping", "stopped"],
+            },
+        ]
+    }
+    stubber.add_response(
+        "describe_instances", {"Reservations": [{"Instances": [instance()]}]}, expected
+    )
+    stubber.add_response(
+        "describe_addresses",
+        {"Addresses": [managed_address(created_at="not-a-timestamp")]},
+        {"Filters": [{"Name": "tag:VmPortalManaged", "Values": ["true"]}]},
+    )
+
+    with stubber:
+        result = Ec2Service(ec2).list_managed()
+
+    assert result[0].eip_allocation_id == "eipalloc-1234567890abcdef0"
+    assert result[0].eip_created_at is None
 
 
 def test_stop_revalidates_tag_and_uses_normal_stop() -> None:

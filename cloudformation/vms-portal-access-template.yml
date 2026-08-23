@@ -33,6 +33,11 @@ Resources:
             Action:
               - ec2:DescribeInstances
             Resource: "*"
+          - Sid: DescribeManagedElasticIps
+            Effect: Allow
+            Action:
+              - ec2:DescribeAddresses
+            Resource: "*"
           - Sid: StartStopManagedInstances
             Effect: Allow
             Action:

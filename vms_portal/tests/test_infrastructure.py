@@ -128,6 +128,32 @@ def test_access_policy_restricts_mutation_by_tag() -> None:
     assert describe["Resource"] == "*"
 
 
+def test_portal_policy_can_describe_eips_but_cannot_provision_resources() -> None:
+    template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
+    statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][
+        "Statement"
+    ]
+    describe_addresses = next(
+        item for item in statements if item["Action"] == ["ec2:DescribeAddresses"]
+    )
+    assert describe_addresses["Resource"] == "*"
+
+    actions = {
+        action for statement in statements for action in statement.get("Action", [])
+    }
+    assert actions.isdisjoint(
+        {
+            "ec2:RunInstances",
+            "ec2:AllocateAddress",
+            "ec2:AssociateAddress",
+            "ec2:ReleaseAddress",
+            "cloudformation:CreateStack",
+            "cloudformation:DeleteStack",
+            "iam:PassRole",
+        }
+    )
+
+
 def test_portal_runtime_policy_does_not_duplicate_shared_ecr_access() -> None:
     template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
     statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][

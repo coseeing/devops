@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from ipaddress import IPv4Address
 from typing import Any
 
@@ -34,6 +34,8 @@ class VmInstance:
     instance_type: str
     state: str
     launch_time: datetime
+    eip_allocation_id: str | None = None
+    eip_created_at: datetime | None = None
 
 
 _ACTIVE_STATES = ["pending", "running", "stopping", "stopped"]
@@ -55,6 +57,7 @@ class Ec2Service:
             for page in paginator.paginate(Filters=filters)
             for vm in _normalize_page(page)
         ]
+        instances = self._with_eip_metadata(instances)
         return sorted(instances, key=lambda vm: (vm.name.casefold(), vm.instance_id))
 
     def find_managed_by_public_ip(self, ip: IPv4Address) -> VmInstance | None:
@@ -68,7 +71,7 @@ class Ec2Service:
         ]
         if len(instances) > 1:
             raise VmError("multiple instances returned for one public IP")
-        return instances[0] if instances else None
+        return self._with_eip_metadata(instances)[0] if instances else None
 
     def start(
         self, instance_id: str, expected_public_ip: IPv4Address | None = None
@@ -96,6 +99,32 @@ class Ec2Service:
         return [
             {"Name": f"tag:{self._tag_key}", "Values": [self._tag_value]},
             {"Name": "instance-state-name", "Values": _ACTIVE_STATES},
+        ]
+
+    def _with_eip_metadata(self, instances: list[VmInstance]) -> list[VmInstance]:
+        response = self._client.describe_addresses(
+            Filters=[
+                {"Name": f"tag:{self._tag_key}", "Values": [self._tag_value]}
+            ]
+        )
+        metadata: dict[str, tuple[str, datetime | None]] = {}
+        for address in response.get("Addresses", []):
+            instance_id = address.get("InstanceId")
+            allocation_id = address.get("AllocationId")
+            if not instance_id or not allocation_id:
+                continue
+            tags = {tag["Key"]: tag["Value"] for tag in address.get("Tags", [])}
+            metadata[instance_id] = (
+                allocation_id,
+                _parse_utc_timestamp(tags.get("VmPortalCreatedAt")),
+            )
+        return [
+            replace(
+                vm,
+                eip_allocation_id=metadata.get(vm.instance_id, (None, None))[0],
+                eip_created_at=metadata.get(vm.instance_id, (None, None))[1],
+            )
+            for vm in instances
         ]
 
     def _revalidate(
@@ -132,3 +161,15 @@ def _normalize_page(page: dict[str, Any]) -> list[VmInstance]:
                 )
             )
     return result
+
+
+def _parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
