@@ -24,11 +24,6 @@ on:
         required: true
         default: "1"
         type: string
-      instance_name:
-        description: "Launch only: EC2 Name tag"
-        required: true
-        default: "windows-a11y"
-        type: string
       instance_type:
         description: "Launch only: EC2 instance type"
         required: true
@@ -124,49 +119,75 @@ jobs:
           echo "Using ${AMI_NAME} (${IMAGE_ID})."
           echo "image_id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy EC2 instance
+      - name: Create VM batch stack
+        id: stack
         env:
           AMI_ID: ${{ steps.ami.outputs.image_id }}
           DISK_SIZE: ${{ inputs.disk_size }}
-          INSTANCE_NAME: ${{ inputs.instance_name }}
+          INSTANCE_COUNT: ${{ inputs.instance_count }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           STACK_NAME: ${{ needs.validate.outputs.stack_name }}
         run: |
-          aws cloudformation deploy \
-            --stack-name "${STACK_NAME}" \
-            --template-file cloudformation/windows-a11y-instance-template.yml \
-            --parameter-overrides \
-              AmiId="${AMI_ID}" \
-              InstanceType="${INSTANCE_TYPE}" \
-              DiskSize="${DISK_SIZE}" \
-              SubnetId="${{ vars.SUBNET_ID }}" \
-              SecurityGroupId="${{ vars.SECURITY_GROUP_ID }}" \
-              InstanceProfileName="${{ vars.INSTANCE_PROFILE_NAME }}" \
-              KeyName="${{ vars.KEY_NAME }}" \
-              InstanceName="${INSTANCE_NAME}" \
-            --no-fail-on-empty-changeset
+          if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" >/dev/null 2>&1; then
+            echo "::error::Stack ${STACK_NAME} already exists. Choose another suffix."
+            exit 1
+          fi
 
-      - name: Wait for instance and publish connection details
+          BATCH_CREATED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          STACK_ID=$(aws cloudformation create-stack \
+            --stack-name "${STACK_NAME}" \
+            --template-body file://cloudformation/windows-a11y-instance-template.yml \
+            --parameters \
+              ParameterKey=AmiId,ParameterValue="${AMI_ID}" \
+              ParameterKey=InstanceCount,ParameterValue="${INSTANCE_COUNT}" \
+              ParameterKey=InstanceType,ParameterValue="${INSTANCE_TYPE}" \
+              ParameterKey=DiskSize,ParameterValue="${DISK_SIZE}" \
+              ParameterKey=SubnetId,ParameterValue="${{ vars.SUBNET_ID }}" \
+              ParameterKey=SecurityGroupId,ParameterValue="${{ vars.SECURITY_GROUP_ID }}" \
+              ParameterKey=InstanceProfileName,ParameterValue="${{ vars.INSTANCE_PROFILE_NAME }}" \
+              ParameterKey=KeyName,ParameterValue="${{ vars.KEY_NAME }}" \
+              ParameterKey=BatchCreatedAt,ParameterValue="${BATCH_CREATED_AT}" \
+            --on-failure DELETE \
+            --query StackId \
+            --output text)
+
+          echo "stack_id=${STACK_ID}" >> "$GITHUB_OUTPUT"
+          if ! aws cloudformation wait stack-create-complete --stack-name "${STACK_ID}"; then
+            echo "::error::CloudFormation failed to create ${STACK_NAME}; the batch is being deleted."
+            aws cloudformation describe-stack-events \
+              --stack-name "${STACK_ID}" \
+              --max-items 20 \
+              --query "StackEvents[?contains(ResourceStatus, 'FAILED')].{Time:Timestamp,Status:ResourceStatus,LogicalId:LogicalResourceId,Type:ResourceType,Reason:ResourceStatusReason}" \
+              --output table || true
+            exit 1
+          fi
+
+      - name: Publish batch connection details
         env:
           AMI_ID: ${{ steps.ami.outputs.image_id }}
+          INSTANCE_COUNT: ${{ inputs.instance_count }}
+          STACK_ID: ${{ steps.stack.outputs.stack_id }}
           STACK_NAME: ${{ needs.validate.outputs.stack_name }}
         run: |
-          INSTANCE_ID=$(aws cloudformation describe-stacks \
-            --stack-name "${STACK_NAME}" \
-            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" \
-            --output text)
-          aws ec2 wait instance-status-ok --instance-ids "${INSTANCE_ID}"
-          PUBLIC_IP=$(aws cloudformation describe-stacks \
-            --stack-name "${STACK_NAME}" \
-            --query "Stacks[0].Outputs[?OutputKey=='PublicIp'].OutputValue" \
-            --output text)
+          OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_ID}" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
 
           {
-            echo "## Windows A11y EC2 launched"
+            echo "## Windows A11y VM batch launched"
             echo "- AMI: \`${AMI_ID}\`"
-            echo "- Instance: \`${INSTANCE_ID}\`"
-            echo "- Public IP: \`${PUBLIC_IP}\`"
             echo "- Stack: \`${STACK_NAME}\`"
+            echo "- Instance count: \`${INSTANCE_COUNT}\`"
+            echo
+            echo "| Name | Instance ID | Elastic IP |"
+            echo "| --- | --- | --- |"
+            for INDEX in $(seq -w 1 "${INSTANCE_COUNT}"); do
+              printf -v SUFFIX '%03d' "$((10#${INDEX}))"
+              INSTANCE_ID=$(jq -r --arg key "InstanceId${SUFFIX}" '.[] | select(.OutputKey == $key).OutputValue' <<< "${OUTPUTS}")
+              ELASTIC_IP=$(jq -r --arg key "ElasticIp${SUFFIX}" '.[] | select(.OutputKey == $key).OutputValue' <<< "${OUTPUTS}")
+              echo "| ${STACK_NAME}-${SUFFIX} | \`${INSTANCE_ID}\` | \`${ELASTIC_IP}\` |"
+            done
           } >> "$GITHUB_STEP_SUMMARY"
 
   delete:
@@ -193,6 +214,10 @@ jobs:
             --stack-name "${STACK_NAME}" \
             --query 'Stacks[0].StackStatus' \
             --output text)
+          INSTANCE_COUNT=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Parameters[?ParameterKey=='InstanceCount'].ParameterValue" \
+            --output text)
 
           echo "Deleting ${STACK_NAME} (current status: ${STACK_STATUS})."
           aws cloudformation delete-stack --stack-name "${STACK_NAME}"
@@ -211,4 +236,5 @@ jobs:
             echo "## Windows A11y stack deleted"
             echo "- Stack: \`${STACK_NAME}\`"
             echo "- Previous status: \`${STACK_STATUS}\`"
+            echo "- Deleted VM count: \`${INSTANCE_COUNT}\`"
           } >> "$GITHUB_STEP_SUMMARY"

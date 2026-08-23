@@ -20,10 +20,58 @@ def load_cfn(path: Path):
     return yaml.load(path.read_text(), Loader=CfnLoader)
 
 
-def test_windows_template_applies_management_tag() -> None:
+def test_windows_template_defines_twenty_conditional_vm_eip_slots() -> None:
     template = load_cfn(ROOT / "cloudformation/windows-a11y-instance-template.yml")
-    tags = template["Resources"]["WindowsInstance"]["Properties"]["Tags"]
-    assert {tag["Key"]: tag["Value"] for tag in tags}["VmPortalManaged"] == "true"
+    assert template["Parameters"]["InstanceCount"]["AllowedValues"] == [
+        str(value) for value in range(1, 21)
+    ]
+
+    for index in range(1, 21):
+        suffix = f"{index:03d}"
+        condition = f"CreateSlot{suffix}"
+        instance = template["Resources"][f"WindowsInstance{suffix}"]
+        eip = template["Resources"][f"ElasticIp{suffix}"]
+
+        assert condition in template["Conditions"]
+        assert instance["Condition"] == condition
+        assert eip["Condition"] == condition
+        assert (
+            instance["Properties"]["NetworkInterfaces"][0][
+                "AssociatePublicIpAddress"
+            ]
+            is False
+        )
+        assert eip["Properties"]["InstanceId"] == f"WindowsInstance{suffix}"
+        assert template["Outputs"][f"InstanceId{suffix}"]["Condition"] == condition
+        assert template["Outputs"][f"ElasticIp{suffix}"]["Condition"] == condition
+
+
+def test_windows_batch_resources_have_portal_and_cost_tags() -> None:
+    template = load_cfn(ROOT / "cloudformation/windows-a11y-instance-template.yml")
+
+    for index in range(1, 21):
+        suffix = f"{index:03d}"
+        instance_tags = {
+            tag["Key"]: tag["Value"]
+            for tag in template["Resources"][f"WindowsInstance{suffix}"][
+                "Properties"
+            ]["Tags"]
+        }
+        eip_tags = {
+            tag["Key"]: tag["Value"]
+            for tag in template["Resources"][f"ElasticIp{suffix}"]["Properties"][
+                "Tags"
+            ]
+        }
+
+        expected_common = {
+            "Name": f"${{AWS::StackName}}-{suffix}",
+            "VmPortalManaged": "true",
+            "VmPortalStack": "AWS::StackName",
+            "VmPortalInstanceIndex": suffix,
+        }
+        assert instance_tags == expected_common
+        assert eip_tags == {**expected_common, "VmPortalCreatedAt": "BatchCreatedAt"}
 
 
 def test_windows_launch_workflow_uses_batch_count_and_latest_managed_ami() -> None:
@@ -38,6 +86,27 @@ def test_windows_launch_workflow_uses_batch_count_and_latest_managed_ami() -> No
     find_ami = next(step for step in steps if step.get("id") == "ami")
     assert find_ami["env"]["AMI_NAME"] == "windows-a11y-*"
     assert "reverse(sort_by(Images, &CreationDate))[0].ImageId" in find_ami["run"]
+
+
+def test_windows_launch_workflow_creates_atomic_batch_and_lists_all_ips() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/launch-windows-a11y-ec2.yml").read_text()
+    )
+    steps = workflow["jobs"]["launch"]["steps"]
+    create = next(step for step in steps if step.get("name") == "Create VM batch stack")
+    assert "aws cloudformation create-stack" in create["run"]
+    assert "--on-failure DELETE" in create["run"]
+    assert 'ParameterKey=InstanceCount,ParameterValue="${INSTANCE_COUNT}"' in create["run"]
+    assert 'ParameterKey=BatchCreatedAt,ParameterValue="${BATCH_CREATED_AT}"' in create["run"]
+    assert "aws cloudformation deploy" not in create["run"]
+
+    publish = next(
+        step for step in steps if step.get("name") == "Publish batch connection details"
+    )
+    assert 'seq -w 1 "${INSTANCE_COUNT}"' in publish["run"]
+    assert "InstanceId${SUFFIX}" in publish["run"]
+    assert "ElasticIp${SUFFIX}" in publish["run"]
+    assert "| Name | Instance ID | Elastic IP |" in publish["run"]
 
 
 def test_access_policy_restricts_mutation_by_tag() -> None:
