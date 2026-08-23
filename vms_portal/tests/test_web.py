@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from ipaddress import IPv4Address
 
 from argon2 import PasswordHasher
@@ -55,6 +56,8 @@ class FakeEc2:
             "m5.xlarge",
             "running",
             datetime(2026, 8, 20, tzinfo=UTC),
+            "eipalloc-123",
+            datetime(2026, 8, 20, tzinfo=UTC),
         )
         self.list_calls = 0
         self.stop_calls = 0
@@ -75,23 +78,43 @@ class FakeEc2:
 
 
 class FakeCosts:
-    def get_costs(self, instance_ids, now):
+    def get_costs(self, vms, now):
         return {
-            instance_id: InstanceCost(
-                instance_id, 1.25, "USD", False, datetime(2026, 8, 20, tzinfo=UTC)
+            vm.instance_id: InstanceCost(
+                vm.instance_id,
+                Decimal("1.25"),
+                Decimal("0.18"),
+                "USD",
+                False,
+                datetime(2026, 8, 20, tzinfo=UTC),
             )
-            for instance_id in instance_ids
+            for vm in vms
         }
 
 
-def make_client():
+class FakeCostsWithoutEc2:
+    def get_costs(self, vms, now):
+        return {
+            vm.instance_id: InstanceCost(
+                vm.instance_id,
+                None,
+                Decimal("0.18"),
+                "USD",
+                False,
+                datetime(2026, 8, 20, tzinfo=UTC),
+            )
+            for vm in vms
+        }
+
+
+def make_client(cost_service=None):
     ec2 = FakeEc2()
     audit_events = []
     app = create_app(
         Settings.from_env({"AUTH_SECRET_ID": "test"}),
         secret_cache=FakeSecretCache(),
         ec2_service=ec2,
-        cost_service=FakeCosts(),
+        cost_service=cost_service or FakeCosts(),
         audit_logger=AuditLogger(audit_events.append),
         clock=lambda: 1_000.0,
     )
@@ -144,7 +167,12 @@ def test_admin_home_lists_managed_instances() -> None:
     assert "198.51.100.9" in response.text
     assert 'action="/instances/i-123/stop"' in response.text
     assert 'data-confirm="停止 windows-demo？"' in response.text
+    assert "最近 14 天 EC2 實際成本" in response.text
     assert "1.25 USD" in response.text
+    assert "最近 14 天 EIP 估算成本" in response.text
+    assert "0.18 USD（估算）" in response.text
+    assert "最近 14 天合計" in response.text
+    assert "1.43 USD" in response.text
     assert ec2.list_calls == 1
 
 
@@ -169,6 +197,19 @@ def test_user_home_never_lists_and_exact_ip_lookup_returns_one_vm() -> None:
     assert 'action="/instances/i-123/stop"' in result.text
     assert 'name="public_ip" value="198.51.100.9"' in result.text
     assert "1.25 USD" in result.text
+    assert "0.18 USD（估算）" in result.text
+    assert "1.43 USD" in result.text
+
+
+def test_cost_explorer_failure_still_shows_eip_estimate_without_total() -> None:
+    client, _, _ = make_client(FakeCostsWithoutEc2())
+    login(client, "admin", "admin-pass")
+
+    response = client.get("/")
+
+    assert "成本資料尚未提供" in response.text
+    assert "0.18 USD（估算）" in response.text
+    assert "合計資料尚未提供" in response.text
 
 
 def test_user_invalid_or_unknown_ip_gets_generic_message() -> None:

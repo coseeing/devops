@@ -50,6 +50,7 @@ OIDC role 必須允許 workflow 執行下列範圍：
 | AWS 權限 | Resource 限制 | 用途 |
 | --- | --- | --- |
 | `ec2:DescribeInstances` | `*` | admin 列出 VM、user 依 Public IPv4 查詢，以及每次開關機前重新驗證 tag/IP/狀態。此 API 不支援限制到單一 instance ARN。 |
+| `ec2:DescribeAddresses` | `*` | 讀取帶有 `VmPortalManaged=true` 的 EIP，依 Instance ID 對應 VM 並取得估算所需的建立時間 tag。此 API 不支援限制到單一 EIP ARN。 |
 | `ec2:StartInstances`、`ec2:StopInstances` | 本帳號、本 Region 的 EC2 instance ARN，另要求 `VmPortalManaged=true` | 只允許控制明確交由 Portal 管理的 Windows VM。 |
 | `secretsmanager:DescribeSecret`、`secretsmanager:GetSecretValue` | 建立部署時指定的單一 Secret ARN | 啟動與定期更新共用登入帳密；Secret 只保留於記憶體 cache。 |
 | `ce:GetCostAndUsageWithResources` | `*` | 查詢每台 EC2 最近 14 天的 Cost Explorer resource-level cost；此 API 不支援 resource ARN 限制。 |
@@ -71,8 +72,10 @@ Linux EC2 不需要 `ec2:*`、`iam:*`、`secretsmanager:*` 或 ECR push 權限�
 ### 4. DNS、Windows tag 與 Cost Explorer
 
 - DNS：將 `vms.coseeing.org` 的 A/AAAA 記錄指向既有 Traefik Linux EC2。
-- Windows VM：新版 `windows-a11y-instance-template.yml` 已自動加入 `VmPortalManaged=true`。既有 VM 必須補上相同 tag，否則 Portal 不會顯示或控制它。
+- Windows VM：新版 `windows-a11y-instance-template.yml` 已自動加入 `VmPortalManaged=true`。既有 VM 必須補上相同 tag，否則 Portal 不會顯示或控制它。由 batch workflow 建立的 EIP 也會帶管理 tag、Instance index 與 `VmPortalCreatedAt`；既有 EIP 缺少建立時間時 Portal 會顯示「估算資料不足」。
 - Cost Explorer：用 payer/management account 開啟 **Billing and Cost Management** → **Cost Management preferences** → **Granular data**，啟用 EC2 resource-level data。資料只涵蓋最近 14 天，可能需等待 48 小時，且 granular data/API request 可能產生費用。
+
+Portal 的 EC2 欄位是 Cost Explorer `UnblendedCost` 實際資料；EIP 欄位不是 Cost Explorer line item，而是依 `VmPortalCreatedAt`、最近 14 天持有小時及 `PUBLIC_IPV4_HOURLY_USD` 計算的估算。部署預設單價為 `0.005` USD/IP/hour。若 AWS 調價，先更新 `ansible_yaml/vms-portal-playbook.yml` 內的環境值再重新部署。VM 停止後 EIP 仍由帳號持有，因此估算會繼續累計。
 
 以上三項無法由本 repository 的 deploy workflow 安全代辦。
 
@@ -103,7 +106,7 @@ Deploy job 會自動完成：
 2. 使用 admin 登入：只應列出有 `VmPortalManaged=true` 的 VM。
 3. 使用 user 登入：不應直接出現清單；輸入已知 Public IPv4 後才能看到該 VM。
 4. 第一次開關機前，人工確認完整 instance ID、Public IPv4、目前狀態與預定動作。
-5. Cost Explorer 尚未準備完成時，畫面顯示「成本資料尚未提供」屬正常情況。
+5. 確認每台 VM 分開顯示 EC2 實際、EIP 估算及合計。Cost Explorer 尚未準備完成時，EC2 顯示「成本資料尚未提供」屬正常情況；有完整 EIP tag 時仍應顯示 EIP 估算，但不顯示合計。
 
 ## D. Rollback 與故障排除
 
@@ -114,6 +117,6 @@ Rollback：checkout 上一個已知正常 commit，從該 commit 手動執行同
 - readiness 503：檢查 Secret JSON schema、instance role 與 IMDSv2 hop limit。
 - VM 不出現：檢查 Region、Public IPv4 與 `VmPortalManaged=true`。
 - AccessDenied：以 CloudTrail request ID 確認缺少的動作，不要擴大成 `ec2:*`。
-- 成本空白：確認 granular data 已啟用並等待最多 48 小時。
+- EC2 成本空白：確認 granular data 已啟用並等待最多 48 小時。EIP 顯示「估算資料不足」時檢查 EIP 的 `VmPortalCreatedAt` tag 與 `PUBLIC_IPV4_HOURLY_USD` 部署值。
 - 帳密輪替未生效：確認 `auth_version` 已增加且 Secret stage 是 `AWSCURRENT`。
 - Traefik 502：檢查 container health、`entry` network 與 `/data/entry/traefik.yml`。

@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from .audit import AuditEvent, AuditLogger
 from .config import Settings
-from .costs import CostService, CostUnavailable
+from .costs import CostService
 from .ec2 import Ec2Service, VmError
 from .secrets import SecretCache, SecretUnavailable
 from .sessions import (
@@ -52,7 +52,9 @@ def create_app(
         boto3.client("ec2", region_name=settings.aws_region)
     )
     cost_service = cost_service or CostService(
-        boto3.client("ce", region_name="us-east-1"), settings.cost_cache_seconds
+        boto3.client("ce", region_name="us-east-1"),
+        settings.cost_cache_seconds,
+        settings.public_ipv4_hourly_usd,
     )
     audit_logger = audit_logger or AuditLogger(
         logging.getLogger("vms_portal.audit").warning
@@ -210,12 +212,7 @@ def create_app(
                 request, "user.html", {"identity": current, "vm": None, "error": None}
             )
         vms = ec2_service.list_managed()
-        try:
-            costs = cost_service.get_costs(
-                [vm.instance_id for vm in vms], datetime.now(UTC)
-            )
-        except CostUnavailable:
-            costs = {}
+        costs = cost_service.get_costs(vms, datetime.now(UTC))
         return render(
             request, "admin.html", {"identity": current, "vms": vms, "costs": costs}
         )
@@ -257,10 +254,7 @@ def create_app(
         error = None if vm else "找不到符合條件的機器。"
         costs = {}
         if vm:
-            try:
-                costs = cost_service.get_costs([vm.instance_id], datetime.now(UTC))
-            except CostUnavailable:
-                pass
+            costs = cost_service.get_costs([vm], datetime.now(UTC))
         return render(
             request,
             "user.html",

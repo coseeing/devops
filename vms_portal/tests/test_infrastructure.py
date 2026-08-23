@@ -177,6 +177,7 @@ def test_deployment_is_non_root_read_only_and_uses_exact_domain() -> None:
     assert "read_only: true" in playbook
     assert "no-new-privileges:true" in playbook
     assert "AUTH_SECRET_ID" in playbook and "secret_data" not in playbook
+    assert "PUBLIC_IPV4_HOURLY_USD=0.005" in playbook
     assert "vms.coseeing.org" in traefik
 
 
