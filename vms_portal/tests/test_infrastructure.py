@@ -26,6 +26,20 @@ def test_windows_template_applies_management_tag() -> None:
     assert {tag["Key"]: tag["Value"] for tag in tags}["VmPortalManaged"] == "true"
 
 
+def test_windows_launch_workflow_uses_batch_count_and_latest_managed_ami() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/launch-windows-a11y-ec2.yml").read_text()
+    )
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["instance_count"]["default"] == "1"
+    assert "ami_name" not in inputs
+
+    steps = workflow["jobs"]["launch"]["steps"]
+    find_ami = next(step for step in steps if step.get("id") == "ami")
+    assert find_ami["env"]["AMI_NAME"] == "windows-a11y-*"
+    assert "reverse(sort_by(Images, &CreationDate))[0].ImageId" in find_ami["run"]
+
+
 def test_access_policy_restricts_mutation_by_tag() -> None:
     template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
     statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][

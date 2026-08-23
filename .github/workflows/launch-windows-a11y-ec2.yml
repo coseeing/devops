@@ -19,9 +19,10 @@ on:
         description: "Delete only: enter the full name, including prefix (example: windows-a11y-anson-test)"
         required: false
         type: string
-      ami_name:
-        description: "Launch only: AMI version label used by build-windows-a11y-ami"
-        required: false
+      instance_count:
+        description: "Launch only: number of VMs to create (1-20)"
+        required: true
+        default: "1"
         type: string
       instance_name:
         description: "Launch only: EC2 Name tag"
@@ -59,15 +60,19 @@ jobs:
         id: stack
         env:
           ACTION: ${{ inputs.action }}
-          AMI_NAME: ${{ inputs.ami_name }}
           CONFIRM_STACK_NAME: ${{ inputs.confirm_stack_name }}
+          DISK_SIZE: ${{ inputs.disk_size }}
+          INSTANCE_COUNT: ${{ inputs.instance_count }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
           STACK_SUFFIX: ${{ inputs.stack_suffix }}
         run: |
           STACK_NAME=$(bash scripts/windows-a11y/validate-stack-operation.sh \
             "${ACTION}" \
             "${STACK_SUFFIX}" \
             "${CONFIRM_STACK_NAME}" \
-            "${AMI_NAME}")
+            "${INSTANCE_COUNT}" \
+            "${INSTANCE_TYPE}" \
+            "${DISK_SIZE}")
 
           echo "Resolved stack name: ${STACK_NAME}"
           echo "stack_name=${STACK_NAME}" >> "$GITHUB_OUTPUT"
@@ -76,6 +81,9 @@ jobs:
             echo "- Action: \`${ACTION}\`"
             echo "- Stack prefix: \`windows-a11y-\`"
             echo "- Full stack name: \`${STACK_NAME}\`"
+            if [ "${ACTION}" = "launch" ]; then
+              echo "- Instance count: \`${INSTANCE_COUNT}\`"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   launch:
@@ -100,7 +108,7 @@ jobs:
       - name: Find the built Windows A11y AMI
         id: ami
         env:
-          AMI_NAME: windows-a11y-${{ inputs.ami_name }}
+          AMI_NAME: windows-a11y-*
         run: |
           IMAGE_ID=$(aws ec2 describe-images \
             --owners self \
