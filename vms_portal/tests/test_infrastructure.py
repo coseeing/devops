@@ -124,6 +124,43 @@ def test_access_policy_restricts_mutation_by_tag() -> None:
     assert describe["Resource"] == "*"
 
 
+def test_scheduler_stops_managed_windows_vms_at_one_am_taipei() -> None:
+    template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
+    schedule = template["Resources"]["NightlyShutdownSchedule"]
+    assert schedule["Type"] == "AWS::Scheduler::Schedule"
+    assert schedule["Properties"]["ScheduleExpression"] == "cron(0 1 * * ? *)"
+    assert schedule["Properties"]["ScheduleExpressionTimezone"] == "Asia/Taipei"
+    assert schedule["Properties"]["FlexibleTimeWindow"] == {"Mode": "OFF"}
+    assert schedule["Properties"]["Target"]["RetryPolicy"]["MaximumRetryAttempts"] > 0
+    assert "DeadLetterConfig" in schedule["Properties"]["Target"]
+
+    policy = template["Resources"]["ShutdownLambdaPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+    stop = next(item for item in policy if "ec2:StopInstances" in item["Action"])
+    assert stop["Condition"]["StringEquals"][
+        "aws:ResourceTag/VmPortalManaged"
+    ] == "true"
+    describe = next(item for item in policy if item["Action"] == ["ec2:DescribeInstances"])
+    assert describe["Resource"] == "*"
+
+
+def test_deploy_workflow_uploads_versioned_lambda_before_access_stack() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/deploy-vms-portal.yml").read_text()
+    )
+    steps = workflow["jobs"]["deploy"]["steps"]
+    prepare = next(step for step in steps if step.get("name") == "Prepare AWS infrastructure")
+    run = prepare["run"]
+    assert "vms-portal-foundation-template.yml" in run
+    assert "lambda/windows_vm_shutdown/lambda_function.py" in run
+    assert "aws s3api put-object" in run
+    assert "ShutdownCodeS3Version=" in run
+    assert run.index("vms-portal-foundation-template.yml") < run.index(
+        "vms-portal-access-template.yml"
+    )
+
+
 def test_portal_policy_can_describe_eips_but_cannot_provision_resources() -> None:
     template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
     statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][

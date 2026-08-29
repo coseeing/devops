@@ -49,6 +49,7 @@ jobs:
       ECR_REPOSITORY: vms-portal
       IMAGE_TAG: ${{ github.sha }}
       ACCESS_STACK_NAME: vms-portal-access
+      FOUNDATION_STACK_NAME: vms-portal-foundation
       RUNTIME_ROLE_NAME: coseeing-ec2-common
       AUTH_SECRET_ID: ${{ inputs.auth_secret_id }}
     steps:
@@ -70,6 +71,25 @@ jobs:
             --query ARN \
             --output text)
 
+          aws cloudformation deploy \
+            --stack-name "$FOUNDATION_STACK_NAME" \
+            --template-file cloudformation/vms-portal-foundation-template.yml \
+            --no-fail-on-empty-changeset
+
+          ARTIFACTS_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$FOUNDATION_STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`DeploymentArtifactsBucketName`].OutputValue' \
+            --output text)
+          SHUTDOWN_CODE_KEY="lambda/windows-vm-shutdown/${GITHUB_SHA}.zip"
+          zip -X -j /tmp/windows-vm-shutdown.zip \
+            lambda/windows_vm_shutdown/lambda_function.py
+          SHUTDOWN_CODE_VERSION=$(aws s3api put-object \
+            --bucket "$ARTIFACTS_BUCKET" \
+            --key "$SHUTDOWN_CODE_KEY" \
+            --body /tmp/windows-vm-shutdown.zip \
+            --query VersionId \
+            --output text)
+
           if ! aws ecr describe-repositories \
             --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
             aws ecr create-repository \
@@ -86,6 +106,9 @@ jobs:
               ExistingRoleName="$RUNTIME_ROLE_NAME" \
               AuthSecretArn="$SECRET_ARN" \
               LogRetentionDays=90 \
+              ShutdownCodeS3Bucket="$ARTIFACTS_BUCKET" \
+              ShutdownCodeS3Key="$SHUTDOWN_CODE_KEY" \
+              ShutdownCodeS3Version="$SHUTDOWN_CODE_VERSION" \
             --no-fail-on-empty-changeset
 
           STACK_OUTPUTS=$(aws cloudformation describe-stacks \
