@@ -8,6 +8,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from fastapi.testclient import TestClient
 from vms_portal.audit import AuditLogger
+from vms_portal.assignments import Assignment
 from vms_portal.config import Settings
 from vms_portal.costs import InstanceCost
 from vms_portal.ec2 import VmInstance
@@ -50,24 +51,25 @@ class FakeSecretCache:
 class FakeEc2:
     def __init__(self) -> None:
         self.vm = VmInstance(
-            "i-123",
+            "i-1234567890abcdef0",
             "windows-demo",
+            IPv4Address("10.0.0.4"),
             IPv4Address("198.51.100.9"),
             "m5.xlarge",
             "running",
             datetime(2026, 8, 20, tzinfo=UTC),
-            "eipalloc-123",
-            datetime(2026, 8, 20, tzinfo=UTC),
         )
         self.list_calls = 0
         self.stop_calls = 0
+        self.lookup_calls = []
 
     def list_managed(self):
         self.list_calls += 1
         return [self.vm]
 
-    def find_managed_by_public_ip(self, ip):
-        return self.vm if ip == self.vm.public_ip else None
+    def find_managed_by_instance_id(self, instance_id):
+        self.lookup_calls.append(instance_id)
+        return self.vm if instance_id == self.vm.instance_id else None
 
     def stop(self, instance_id, expected_public_ip=None):
         self.stop_calls += 1
@@ -107,7 +109,29 @@ class FakeCostsWithoutEc2:
         }
 
 
-def make_client(cost_service=None):
+class FakeAssignments:
+    def __init__(self) -> None:
+        self.values = {
+            "i-1234567890abcdef0": Assignment(
+                "i-1234567890abcdef0",
+                "Original owner",
+                datetime(2026, 8, 20, tzinfo=UTC),
+                "admin",
+            )
+        }
+        self.upsert_calls = []
+
+    def get_many(self, instance_ids):
+        return {key: self.values[key] for key in instance_ids if key in self.values}
+
+    def upsert(self, instance_id, assignee, *, updated_by, updated_at):
+        self.upsert_calls.append((instance_id, assignee, updated_by))
+        assignment = Assignment(instance_id, assignee, updated_at, updated_by)
+        self.values[instance_id] = assignment
+        return assignment
+
+
+def make_client(cost_service=None, assignment_repository=None):
     ec2 = FakeEc2()
     audit_events = []
     app = create_app(
@@ -115,6 +139,7 @@ def make_client(cost_service=None):
         secret_cache=FakeSecretCache(),
         ec2_service=ec2,
         cost_service=cost_service or FakeCosts(),
+        assignment_repository=assignment_repository or FakeAssignments(),
         audit_logger=AuditLogger(audit_events.append),
         clock=lambda: 1_000.0,
     )
@@ -164,24 +189,24 @@ def test_admin_home_lists_managed_instances() -> None:
     assert response.status_code == 200
     assert "vms_portal_session=" in response.headers["set-cookie"]
     assert "windows-demo" in response.text
+    assert "i-1234567890abcdef0" in response.text
+    assert "Original owner" in response.text
+    assert "10.0.0.4" in response.text
     assert "198.51.100.9" in response.text
-    assert 'action="/instances/i-123/stop"' in response.text
+    assert 'action="/instances/i-1234567890abcdef0/stop"' in response.text
     assert 'data-confirm="停止 windows-demo？"' in response.text
     assert "最近 14 天 EC2 實際成本" in response.text
     assert "1.25 USD" in response.text
-    assert "最近 14 天 EIP 估算成本" in response.text
-    assert "0.18 USD（估算）" in response.text
-    assert "最近 14 天合計" in response.text
-    assert "1.43 USD" in response.text
+    assert "EIP" not in response.text
     assert ec2.list_calls == 1
 
 
-def test_user_home_never_lists_and_exact_ip_lookup_returns_one_vm() -> None:
+def test_user_home_never_lists_and_exact_instance_id_lookup_returns_one_vm() -> None:
     client, ec2, _ = make_client()
     login(client, "user", "user-pass")
 
     home = client.get("/")
-    assert "輸入 Public IPv4" in home.text
+    assert "輸入 Instance ID" in home.text
     assert "windows-demo" not in home.text
     assert ec2.list_calls == 0
 
@@ -190,29 +215,32 @@ def test_user_home_never_lists_and_exact_ip_lookup_returns_one_vm() -> None:
         or client.cookies["vms_portal_session_csrf"]
     )
     result = client.post(
-        "/lookup", data={"public_ip": "198.51.100.9", "csrf_token": csrf}
+        "/lookup",
+        data={"instance_id": "i-1234567890abcdef0", "csrf_token": csrf},
     )
     assert result.status_code == 200
     assert "windows-demo" in result.text
-    assert 'action="/instances/i-123/stop"' in result.text
-    assert 'name="public_ip" value="198.51.100.9"' in result.text
+    assert "i-1234567890abcdef0" in result.text
+    assert "10.0.0.4" in result.text
+    assert "198.51.100.9" not in result.text
+    assert "Original owner" not in result.text
+    assert 'action="/instances/i-1234567890abcdef0/stop"' in result.text
+    assert 'name="public_ip"' not in result.text
     assert "1.25 USD" in result.text
-    assert "0.18 USD（估算）" in result.text
-    assert "1.43 USD" in result.text
+    assert "EIP" not in result.text
 
 
-def test_cost_explorer_failure_still_shows_eip_estimate_without_total() -> None:
+def test_cost_explorer_failure_shows_unavailable_without_eip_values() -> None:
     client, _, _ = make_client(FakeCostsWithoutEc2())
     login(client, "admin", "admin-pass")
 
     response = client.get("/")
 
     assert "成本資料尚未提供" in response.text
-    assert "0.18 USD（估算）" in response.text
-    assert "合計資料尚未提供" in response.text
+    assert "EIP" not in response.text
 
 
-def test_user_invalid_or_unknown_ip_gets_generic_message() -> None:
+def test_user_invalid_or_unknown_instance_id_gets_generic_message() -> None:
     client, _, _ = make_client()
     login(client, "user", "user-pass")
     home = client.get("/")
@@ -222,10 +250,10 @@ def test_user_invalid_or_unknown_ip_gets_generic_message() -> None:
     )
 
     invalid = client.post(
-        "/lookup", data={"public_ip": "not-an-ip", "csrf_token": csrf}
+        "/lookup", data={"instance_id": "not-an-id", "csrf_token": csrf}
     )
     missing = client.post(
-        "/lookup", data={"public_ip": "203.0.113.8", "csrf_token": csrf}
+        "/lookup", data={"instance_id": "i-00000000000000000", "csrf_token": csrf}
     )
 
     assert "找不到符合條件的機器" in invalid.text
@@ -255,10 +283,61 @@ def test_stop_writes_audit_before_and_after_mutation() -> None:
     csrf = client.cookies["vms_portal_session_csrf"]
 
     response = client.post(
-        "/instances/i-123/stop", data={"csrf_token": csrf}, follow_redirects=False
+        "/instances/i-1234567890abcdef0/stop",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
     )
 
     assert response.status_code == 303
     assert ec2.stop_calls == 1
     assert '"event":"vm.stop.accepted"' in events[-2]
     assert '"event":"vm.stop.succeeded"' in events[-1]
+
+
+def test_admin_can_update_assignment_with_csrf_and_audit() -> None:
+    assignments = FakeAssignments()
+    client, ec2, events = make_client(assignment_repository=assignments)
+    login(client, "admin", "admin-pass")
+    client.get("/")
+    csrf = client.cookies["vms_portal_session_csrf"]
+
+    response = client.post(
+        "/instances/i-1234567890abcdef0/assignment",
+        data={"csrf_token": csrf, "assignee": "Anson"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert ec2.lookup_calls == ["i-1234567890abcdef0"]
+    assert assignments.upsert_calls == [
+        ("i-1234567890abcdef0", "Anson", "admin")
+    ]
+    assert '"event":"vm.assignment.updated"' in events[-1]
+    assert '"assignee":"Anson"' in events[-1]
+
+
+def test_assignment_update_is_admin_only_and_requires_csrf() -> None:
+    assignments = FakeAssignments()
+    client, _, _ = make_client(assignment_repository=assignments)
+    login(client, "admin", "admin-pass")
+    assert (
+        client.post(
+            "/instances/i-1234567890abcdef0/assignment",
+            data={"csrf_token": "bad", "assignee": "Anson"},
+        ).status_code
+        == 403
+    )
+
+    client, _, _ = make_client(assignment_repository=assignments)
+    login(client, "user", "user-pass")
+    home = client.get("/")
+    csrf = home.cookies.get("vms_portal_session_csrf") or client.cookies[
+        "vms_portal_session_csrf"
+    ]
+    response = client.post(
+        "/instances/i-1234567890abcdef0/assignment",
+        data={"csrf_token": csrf, "assignee": "Anson"},
+    )
+
+    assert response.status_code == 403
+    assert assignments.upsert_calls == []

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from ipaddress import AddressValueError, IPv4Address
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .audit import AuditEvent, AuditLogger
+from .assignments import AssignmentRepository
 from .config import Settings
 from .costs import CostService
 from .ec2 import Ec2Service, VmError
@@ -31,6 +32,7 @@ from .sessions import (
 )
 
 _ROOT = Path(__file__).parent
+_INSTANCE_ID = re.compile(r"^i-[0-9a-f]{8,17}$")
 
 
 def create_app(
@@ -39,6 +41,7 @@ def create_app(
     secret_cache: Any | None = None,
     ec2_service: Any | None = None,
     cost_service: Any | None = None,
+    assignment_repository: Any | None = None,
     audit_logger: AuditLogger | None = None,
     clock: Callable[[], float] = time.time,
 ) -> FastAPI:
@@ -55,6 +58,9 @@ def create_app(
         boto3.client("ce", region_name="us-east-1"),
         settings.cost_cache_seconds,
         settings.public_ipv4_hourly_usd,
+    )
+    assignment_repository = assignment_repository or AssignmentRepository(
+        settings.assignments_db_path
     )
     audit_logger = audit_logger or AuditLogger(
         logging.getLogger("vms_portal.audit").warning
@@ -213,8 +219,18 @@ def create_app(
             )
         vms = ec2_service.list_managed()
         costs = cost_service.get_costs(vms, datetime.now(UTC))
+        assignments = assignment_repository.get_many(
+            vm.instance_id for vm in vms
+        )
         return render(
-            request, "admin.html", {"identity": current, "vms": vms, "costs": costs}
+            request,
+            "admin.html",
+            {
+                "identity": current,
+                "vms": vms,
+                "costs": costs,
+                "assignments": assignments,
+            },
         )
 
     @app.post("/logout")
@@ -245,12 +261,9 @@ def create_app(
         if not validate_csrf(current.csrf_token, str(form.get("csrf_token", ""))):
             return HTMLResponse("Forbidden", status_code=403)
         vm = None
-        try:
-            vm = ec2_service.find_managed_by_public_ip(
-                IPv4Address(str(form.get("public_ip", "")))
-            )
-        except (AddressValueError, ValueError):
-            pass
+        supplied_id = str(form.get("instance_id", "")).strip()
+        if _INSTANCE_ID.fullmatch(supplied_id):
+            vm = ec2_service.find_managed_by_instance_id(supplied_id)
         error = None if vm else "找不到符合條件的機器。"
         costs = {}
         if vm:
@@ -261,6 +274,42 @@ def create_app(
             {"identity": current, "vm": vm, "error": error, "costs": costs},
         )
 
+    @app.post("/instances/{instance_id}/assignment")
+    async def update_assignment(instance_id: str, request: Request):
+        current = identity(request)
+        if current is None:
+            return RedirectResponse("/login", status_code=303)
+        if current.role != "admin":
+            return HTMLResponse("Forbidden", status_code=403)
+        form = await request.form()
+        if not validate_csrf(current.csrf_token, str(form.get("csrf_token", ""))):
+            return HTMLResponse("Forbidden", status_code=403)
+        vm = ec2_service.find_managed_by_instance_id(instance_id)
+        if vm is None:
+            return HTMLResponse("Not found", status_code=404)
+        assignee = str(form.get("assignee", "")).strip()
+        if len(assignee) > 200:
+            return HTMLResponse("Invalid assignment", status_code=422)
+        assignment_repository.upsert(
+            instance_id,
+            assignee,
+            updated_by=current.username,
+            updated_at=datetime.fromtimestamp(clock(), UTC),
+        )
+        audit_logger.emit(
+            AuditEvent(
+                "vm.assignment.updated",
+                "succeeded",
+                str(uuid.uuid4()),
+                current.username,
+                current.role,
+                request.client.host if request.client else "unknown",
+                instance_id,
+                details={"assignee": assignee},
+            )
+        )
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/instances/{instance_id}/{action}")
     async def power(instance_id: str, action: str, request: Request):
         current = identity(request)
@@ -269,9 +318,6 @@ def create_app(
         form = await request.form()
         if not validate_csrf(current.csrf_token, str(form.get("csrf_token", ""))):
             return HTMLResponse("Forbidden", status_code=403)
-        expected_ip = (
-            IPv4Address(str(form["public_ip"])) if current.role == "user" else None
-        )
         if action not in {"start", "stop"}:
             return HTMLResponse("Not found", status_code=404)
         request_id = str(uuid.uuid4())
@@ -284,11 +330,10 @@ def create_app(
             current.role,
             source_ip,
             instance_id,
-            str(expected_ip) if expected_ip else None,
         )
         audit_logger.emit(accepted)
         try:
-            getattr(ec2_service, action)(instance_id, expected_ip)
+            getattr(ec2_service, action)(instance_id)
         except VmError:
             audit_logger.emit(
                 AuditEvent(

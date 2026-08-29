@@ -20,11 +20,15 @@ def test_audit_serializes_only_allowlisted_fields() -> None:
             instance_id="i-123",
             public_ip="198.51.100.9",
             previous_state="running",
-            details={"password": "must-not-log", "category": "accepted"},
+            details={
+                "password": "must-not-log",
+                "category": "accepted",
+                "assignee": "Anson",
+            },
         )
     )
 
     parsed = json.loads(emitted[0])
     assert parsed["event"] == "vm.stop.accepted"
-    assert parsed["details"] == {"category": "accepted"}
+    assert parsed["details"] == {"assignee": "Anson", "category": "accepted"}
     assert "must-not-log" not in emitted[0]

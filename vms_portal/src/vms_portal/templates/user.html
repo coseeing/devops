@@ -2,7 +2,7 @@
 {% block content %}
 <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>登出</button></form>
 <h2>查詢 VM</h2>
-<form method="post" action="/lookup"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><label>輸入 Public IPv4 <input name="public_ip" inputmode="decimal" required></label><button>查詢</button></form>
+<form method="post" action="/lookup"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><label>輸入 Instance ID <input name="instance_id" pattern="i-[0-9a-f]{8,17}" required></label><button>查詢</button></form>
 {% if error %}<p role="alert">{{ error }}</p>{% endif %}
 {% if vm %}
 {% set cost = costs.get(vm.instance_id) %}
@@ -10,13 +10,11 @@
   <h3>{{ vm.name }}</h3>
   <dl>
     <dt>Instance ID</dt><dd>{{ vm.instance_id }}</dd>
-    <dt>Public IPv4</dt><dd>{{ vm.public_ip }}</dd>
+    <dt>Private IPv4</dt><dd>{{ vm.private_ip }}</dd>
     <dt>狀態</dt><dd>{{ vm.state }}</dd>
     <dt>最近 14 天 EC2 實際成本</dt><dd>{% if cost and cost.ec2_amount is not none %}{{ cost.ec2_amount }} {{ cost.currency }}{% else %}成本資料尚未提供{% endif %}</dd>
-    <dt>最近 14 天 EIP 估算成本</dt><dd>{% if not vm.eip_allocation_id %}未綁定受管 EIP{% elif cost and cost.eip_amount is not none %}{{ cost.eip_amount }} {{ cost.currency }}（估算）{% else %}估算資料不足{% endif %}</dd>
-    <dt>最近 14 天合計</dt><dd>{% if cost and cost.total_amount is not none %}{{ cost.total_amount }} {{ cost.currency }}{% else %}合計資料尚未提供{% endif %}</dd>
   </dl>
-  {% if vm.state == 'running' %}<form method="post" action="/instances/{{ vm.instance_id }}/stop" data-confirm="停止 {{ vm.name }}？"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><input type="hidden" name="public_ip" value="{{ vm.public_ip }}"><button>停止 {{ vm.name }}</button></form>{% elif vm.state == 'stopped' %}<form method="post" action="/instances/{{ vm.instance_id }}/start"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><input type="hidden" name="public_ip" value="{{ vm.public_ip }}"><button>啟動 {{ vm.name }}</button></form>{% else %}<p>狀態轉換中</p>{% endif %}
+  {% if vm.state == 'running' %}<form method="post" action="/instances/{{ vm.instance_id }}/stop" data-confirm="停止 {{ vm.name }}？"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>停止 {{ vm.name }}</button></form>{% elif vm.state == 'stopped' %}<form method="post" action="/instances/{{ vm.instance_id }}/start"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>啟動 {{ vm.name }}</button></form>{% else %}<p>狀態轉換中</p>{% endif %}
 </section>
 {% endif %}
 {% endblock %}
