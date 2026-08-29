@@ -133,7 +133,6 @@ jobs:
             exit 1
           fi
 
-          BATCH_CREATED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           STACK_ID=$(aws cloudformation create-stack \
             --stack-name "${STACK_NAME}" \
             --template-body file://cloudformation/windows-a11y-instance-template.yml \
@@ -146,7 +145,6 @@ jobs:
               ParameterKey=SecurityGroupId,ParameterValue="${{ vars.SECURITY_GROUP_ID }}" \
               ParameterKey=InstanceProfileName,ParameterValue="${{ vars.INSTANCE_PROFILE_NAME }}" \
               ParameterKey=KeyName,ParameterValue="${{ vars.KEY_NAME }}" \
-              ParameterKey=BatchCreatedAt,ParameterValue="${BATCH_CREATED_AT}" \
             --on-failure DELETE \
             --query StackId \
             --output text)
@@ -180,13 +178,14 @@ jobs:
             echo "- Stack: \`${STACK_NAME}\`"
             echo "- Instance count: \`${INSTANCE_COUNT}\`"
             echo
-            echo "| Name | Instance ID | Elastic IP |"
-            echo "| --- | --- | --- |"
+            echo "| Name | Instance ID | Private IP | Current public IP |"
+            echo "| --- | --- | --- | --- |"
             for INDEX in $(seq -w 1 "${INSTANCE_COUNT}"); do
               printf -v SUFFIX '%03d' "$((10#${INDEX}))"
               INSTANCE_ID=$(jq -r --arg key "InstanceId${SUFFIX}" '.[] | select(.OutputKey == $key).OutputValue' <<< "${OUTPUTS}")
-              ELASTIC_IP=$(jq -r --arg key "ElasticIp${SUFFIX}" '.[] | select(.OutputKey == $key).OutputValue' <<< "${OUTPUTS}")
-              echo "| ${STACK_NAME}-${SUFFIX} | \`${INSTANCE_ID}\` | \`${ELASTIC_IP}\` |"
+              PRIVATE_IP=$(jq -r --arg key "PrivateIp${SUFFIX}" '.[] | select(.OutputKey == $key).OutputValue' <<< "${OUTPUTS}")
+              PUBLIC_IP=$(jq -r --arg key "PublicIp${SUFFIX}" '.[] | select(.OutputKey == $key).OutputValue' <<< "${OUTPUTS}")
+              echo "| ${STACK_NAME}-${SUFFIX} | \`${INSTANCE_ID}\` | \`${PRIVATE_IP}\` | \`${PUBLIC_IP}\` |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
 

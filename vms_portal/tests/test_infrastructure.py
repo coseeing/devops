@@ -20,7 +20,7 @@ def load_cfn(path: Path):
     return yaml.load(path.read_text(), Loader=CfnLoader)
 
 
-def test_windows_template_defines_twenty_conditional_vm_eip_slots() -> None:
+def test_windows_template_defines_twenty_conditional_vm_slots_with_dynamic_ips() -> None:
     template = load_cfn(ROOT / "cloudformation/windows-a11y-instance-template.yml")
     assert template["Parameters"]["InstanceCount"]["AllowedValues"] == [
         str(value) for value in range(1, 21)
@@ -30,23 +30,26 @@ def test_windows_template_defines_twenty_conditional_vm_eip_slots() -> None:
         suffix = f"{index:03d}"
         condition = f"CreateSlot{suffix}"
         instance = template["Resources"][f"WindowsInstance{suffix}"]
-        eip = template["Resources"][f"ElasticIp{suffix}"]
-
         assert condition in template["Conditions"]
         assert instance["Condition"] == condition
-        assert eip["Condition"] == condition
         assert (
             instance["Properties"]["NetworkInterfaces"][0][
                 "AssociatePublicIpAddress"
             ]
-            is False
+            is True
         )
-        assert eip["Properties"]["InstanceId"] == f"WindowsInstance{suffix}"
         assert template["Outputs"][f"InstanceId{suffix}"]["Condition"] == condition
-        assert template["Outputs"][f"ElasticIp{suffix}"]["Condition"] == condition
+        assert template["Outputs"][f"PrivateIp{suffix}"]["Condition"] == condition
+        assert template["Outputs"][f"PublicIp{suffix}"]["Condition"] == condition
+
+    assert all(
+        resource["Type"] != "AWS::EC2::EIP"
+        for resource in template["Resources"].values()
+    )
+    assert not any(name.startswith("ElasticIp") for name in template["Outputs"])
 
 
-def test_windows_batch_resources_have_portal_and_cost_tags() -> None:
+def test_windows_batch_resources_have_portal_tags() -> None:
     template = load_cfn(ROOT / "cloudformation/windows-a11y-instance-template.yml")
 
     for index in range(1, 21):
@@ -57,13 +60,6 @@ def test_windows_batch_resources_have_portal_and_cost_tags() -> None:
                 "Properties"
             ]["Tags"]
         }
-        eip_tags = {
-            tag["Key"]: tag["Value"]
-            for tag in template["Resources"][f"ElasticIp{suffix}"]["Properties"][
-                "Tags"
-            ]
-        }
-
         expected_common = {
             "Name": f"${{AWS::StackName}}-{suffix}",
             "VmPortalManaged": "true",
@@ -71,7 +67,6 @@ def test_windows_batch_resources_have_portal_and_cost_tags() -> None:
             "VmPortalInstanceIndex": suffix,
         }
         assert instance_tags == expected_common
-        assert eip_tags == {**expected_common, "VmPortalCreatedAt": "BatchCreatedAt"}
 
 
 def test_windows_launch_workflow_uses_batch_count_and_latest_managed_ami() -> None:
@@ -97,7 +92,7 @@ def test_windows_launch_workflow_creates_atomic_batch_and_lists_all_ips() -> Non
     assert "aws cloudformation create-stack" in create["run"]
     assert "--on-failure DELETE" in create["run"]
     assert 'ParameterKey=InstanceCount,ParameterValue="${INSTANCE_COUNT}"' in create["run"]
-    assert 'ParameterKey=BatchCreatedAt,ParameterValue="${BATCH_CREATED_AT}"' in create["run"]
+    assert "BatchCreatedAt" not in create["run"]
     assert "aws cloudformation deploy" not in create["run"]
 
     publish = next(
@@ -105,8 +100,9 @@ def test_windows_launch_workflow_creates_atomic_batch_and_lists_all_ips() -> Non
     )
     assert 'seq -w 1 "${INSTANCE_COUNT}"' in publish["run"]
     assert "InstanceId${SUFFIX}" in publish["run"]
-    assert "ElasticIp${SUFFIX}" in publish["run"]
-    assert "| Name | Instance ID | Elastic IP |" in publish["run"]
+    assert "PrivateIp${SUFFIX}" in publish["run"]
+    assert "PublicIp${SUFFIX}" in publish["run"]
+    assert "| Name | Instance ID | Private IP | Current public IP |" in publish["run"]
 
 
 def test_access_policy_restricts_mutation_by_tag() -> None:
