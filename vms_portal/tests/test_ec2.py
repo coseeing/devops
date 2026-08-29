@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+
 import boto3
 import pytest
 from botocore.stub import Stubber
@@ -113,7 +114,9 @@ def test_normalization_allows_missing_dynamic_public_ip() -> None:
     }
     raw = instance()
     raw.pop("PublicIpAddress")
-    stubber.add_response("describe_instances", {"Reservations": [{"Instances": [raw]}]}, expected)
+    stubber.add_response(
+        "describe_instances", {"Reservations": [{"Instances": [raw]}]}, expected
+    )
 
     with stubber:
         result = Ec2Service(ec2).list_managed()

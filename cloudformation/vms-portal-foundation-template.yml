@@ -64,41 +64,6 @@ Resources:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
 
-  PortalCurExport:
-    Type: AWS::BCMDataExports::Export
-    DependsOn: CostDataBucketPolicy
-    Properties:
-      Export:
-        Name: vms_portal_cur
-        Description: Minimal resource-level EC2 cost data for the Windows VM portal
-        DataQuery:
-          QueryStatement: >-
-            SELECT bill_billing_period_start_date,
-            line_item_resource_id,
-            line_item_usage_start_date,
-            line_item_unblended_cost,
-            reservation_effective_cost,
-            savings_plan_savings_plan_effective_cost
-            FROM COST_AND_USAGE_REPORT
-          TableConfigurations:
-            COST_AND_USAGE_REPORT:
-              INCLUDE_RESOURCES: "TRUE"
-              INCLUDE_SPLIT_COST_ALLOCATION_DATA: "FALSE"
-              TIME_GRANULARITY: "DAILY"
-        DestinationConfigurations:
-          S3Destination:
-            S3Bucket: !Ref CostDataBucket
-            S3BucketOwner: !Ref AWS::AccountId
-            S3Prefix: vms-portal-cur
-            S3Region: !Ref AWS::Region
-            S3OutputConfigurations:
-              Compression: PARQUET
-              Format: PARQUET
-              OutputType: CUSTOM
-              Overwrite: OVERWRITE_REPORT
-        RefreshCadence:
-          Frequency: SYNCHRONOUS
-
   CostDatabase:
     Type: AWS::Glue::Database
     Properties:
@@ -140,6 +105,10 @@ Resources:
               Type: string
             - Name: line_item_usage_start_date
               Type: timestamp
+            - Name: line_item_line_item_type
+              Type: string
+            - Name: line_item_currency_code
+              Type: string
             - Name: line_item_unblended_cost
               Type: decimal(38,18)
             - Name: reservation_effective_cost

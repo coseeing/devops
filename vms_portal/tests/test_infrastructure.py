@@ -20,7 +20,9 @@ def load_cfn(path: Path):
     return yaml.load(path.read_text(), Loader=CfnLoader)
 
 
-def test_windows_template_defines_twenty_conditional_vm_slots_with_dynamic_ips() -> None:
+def test_windows_template_defines_twenty_conditional_vm_slots_with_dynamic_ips() -> (
+    None
+):
     template = load_cfn(ROOT / "cloudformation/windows-a11y-instance-template.yml")
     assert template["Parameters"]["InstanceCount"]["AllowedValues"] == [
         str(value) for value in range(1, 21)
@@ -33,9 +35,7 @@ def test_windows_template_defines_twenty_conditional_vm_slots_with_dynamic_ips()
         assert condition in template["Conditions"]
         assert instance["Condition"] == condition
         assert (
-            instance["Properties"]["NetworkInterfaces"][0][
-                "AssociatePublicIpAddress"
-            ]
+            instance["Properties"]["NetworkInterfaces"][0]["AssociatePublicIpAddress"]
             is True
         )
         assert template["Outputs"][f"InstanceId{suffix}"]["Condition"] == condition
@@ -56,9 +56,9 @@ def test_windows_batch_resources_have_portal_tags() -> None:
         suffix = f"{index:03d}"
         instance_tags = {
             tag["Key"]: tag["Value"]
-            for tag in template["Resources"][f"WindowsInstance{suffix}"][
-                "Properties"
-            ]["Tags"]
+            for tag in template["Resources"][f"WindowsInstance{suffix}"]["Properties"][
+                "Tags"
+            ]
         }
         expected_common = {
             "Name": f"${{AWS::StackName}}-{suffix}",
@@ -91,7 +91,9 @@ def test_windows_launch_workflow_creates_atomic_batch_and_lists_all_ips() -> Non
     create = next(step for step in steps if step.get("name") == "Create VM batch stack")
     assert "aws cloudformation create-stack" in create["run"]
     assert "--on-failure DELETE" in create["run"]
-    assert 'ParameterKey=InstanceCount,ParameterValue="${INSTANCE_COUNT}"' in create["run"]
+    assert (
+        'ParameterKey=InstanceCount,ParameterValue="${INSTANCE_COUNT}"' in create["run"]
+    )
     assert "BatchCreatedAt" not in create["run"]
     assert "aws cloudformation deploy" not in create["run"]
 
@@ -138,10 +140,12 @@ def test_scheduler_stops_managed_windows_vms_at_one_am_taipei() -> None:
         "PolicyDocument"
     ]["Statement"]
     stop = next(item for item in policy if "ec2:StopInstances" in item["Action"])
-    assert stop["Condition"]["StringEquals"][
-        "aws:ResourceTag/VmPortalManaged"
-    ] == "true"
-    describe = next(item for item in policy if item["Action"] == ["ec2:DescribeInstances"])
+    assert (
+        stop["Condition"]["StringEquals"]["aws:ResourceTag/VmPortalManaged"] == "true"
+    )
+    describe = next(
+        item for item in policy if item["Action"] == ["ec2:DescribeInstances"]
+    )
     assert describe["Resource"] == "*"
 
 
@@ -150,7 +154,9 @@ def test_deploy_workflow_uploads_versioned_lambda_before_access_stack() -> None:
         (ROOT / ".github/workflows/deploy-vms-portal.yml").read_text()
     )
     steps = workflow["jobs"]["deploy"]["steps"]
-    prepare = next(step for step in steps if step.get("name") == "Prepare AWS infrastructure")
+    prepare = next(
+        step for step in steps if step.get("name") == "Prepare AWS infrastructure"
+    )
     run = prepare["run"]
     assert "vms-portal-foundation-template.yml" in run
     assert "lambda/windows_vm_shutdown/lambda_function.py" in run
@@ -201,12 +207,17 @@ def test_foundation_defines_cur2_parquet_glue_projection_and_athena_limits() -> 
     assert bucket["BucketEncryption"]
     assert all(bucket["PublicAccessBlockConfiguration"].values())
 
-    export = resources["PortalCurExport"]["Properties"]["Export"]
+    assert "PortalCurExport" not in resources
+    export_path = ROOT / "cloudformation/vms-portal-cur-export-template.yml"
+    assert export_path.exists()
+    export_template = load_cfn(export_path)
+    export = export_template["Resources"]["PortalCurExport"]["Properties"]["Export"]
     query = export["DataQuery"]
     assert "line_item_resource_id" in query["QueryStatement"]
-    assert query["TableConfigurations"]["COST_AND_USAGE_REPORT"][
-        "INCLUDE_RESOURCES"
-    ] == "TRUE"
+    assert (
+        query["TableConfigurations"]["COST_AND_USAGE_REPORT"]["INCLUDE_RESOURCES"]
+        == "TRUE"
+    )
     destination = export["DestinationConfigurations"]["S3Destination"]
     assert destination["S3OutputConfigurations"] == {
         "Compression": "PARQUET",
@@ -220,9 +231,12 @@ def test_foundation_defines_cur2_parquet_glue_projection_and_athena_limits() -> 
     assert table["Parameters"]["projection.enabled"] == "true"
     assert table["Parameters"]["projection.billing_period.type"] == "date"
     assert "${!billing_period}" in table["Parameters"]["storage.location.template"]
-    assert resources["CostWorkGroup"]["Properties"]["WorkGroupConfiguration"][
-        "BytesScannedCutoffPerQuery"
-    ] == 1073741824
+    assert (
+        resources["CostWorkGroup"]["Properties"]["WorkGroupConfiguration"][
+            "BytesScannedCutoffPerQuery"
+        ]
+        == 1073741824
+    )
     assert "Crawler" not in " ".join(resources)
 
 
@@ -244,6 +258,13 @@ def test_deploy_workflow_passes_foundation_cost_outputs_to_access_stack() -> Non
     ):
         assert value in prepare
     assert "CostDatabaseName=" in prepare
+    assert "vms-portal-cur-export-template.yml" in prepare
+    assert "--region us-east-1" in prepare
+    assert (
+        prepare.index("vms-portal-foundation-template.yml")
+        < prepare.index("vms-portal-cur-export-template.yml")
+        < prepare.index("vms-portal-access-template.yml")
+    )
 
 
 def test_portal_runtime_policy_does_not_duplicate_shared_ecr_access() -> None:
@@ -251,11 +272,7 @@ def test_portal_runtime_policy_does_not_duplicate_shared_ecr_access() -> None:
     statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][
         "Statement"
     ]
-    actions = {
-        action
-        for statement in statements
-        for action in statement["Action"]
-    }
+    actions = {action for statement in statements for action in statement["Action"]}
 
     assert not any(action.startswith("ecr:") for action in actions)
 

@@ -12,7 +12,7 @@
     <dt>Instance ID</dt><dd>{{ vm.instance_id }}</dd>
     <dt>Private IPv4</dt><dd>{{ vm.private_ip }}</dd>
     <dt>狀態</dt><dd>{{ vm.state }}</dd>
-    <dt>最近 14 天 EC2 實際成本</dt><dd>{% if cost and cost.ec2_amount is not none %}{{ cost.ec2_amount }} {{ cost.currency }}{% else %}成本資料尚未提供{% endif %}</dd>
+    <dt>最近 60 天 EC2 成本</dt><dd>{% if cost and cost.status == 'ready' %}{{ cost.amount }} {{ cost.currency }}<br><small>可用期間：{{ cost.period_start }}～{{ cost.period_end }}</small>{% elif cost and cost.status == 'not_ready' %}成本報表尚未準備完成{% else %}成本查詢失敗{% endif %}</dd>
   </dl>
   {% if vm.state == 'running' %}<form method="post" action="/instances/{{ vm.instance_id }}/stop" data-confirm="停止 {{ vm.name }}？"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>停止 {{ vm.name }}</button></form>{% elif vm.state == 'stopped' %}<form method="post" action="/instances/{{ vm.instance_id }}/start"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>啟動 {{ vm.name }}</button></form>{% else %}<p>狀態轉換中</p>{% endif %}
 </section>

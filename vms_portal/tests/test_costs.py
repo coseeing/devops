@@ -1,195 +1,213 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from ipaddress import IPv4Address
 
-import boto3
-from botocore.stub import Stubber
+from botocore.exceptions import ClientError
 from vms_portal.costs import CostService
 from vms_portal.ec2 import VmInstance
 
 
-def client():
-    return boto3.client(
-        "ce",
-        region_name="us-east-1",
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        aws_session_token="test",
-    )
-
-
-def vm(
-    instance_id: str,
-    *,
-    state: str = "running",
-    allocation_id: str | None = None,
-    eip_created_at: datetime | None = None,
-) -> VmInstance:
+def vm(instance_id: str) -> VmInstance:
     return VmInstance(
         instance_id,
-        f"windows-{instance_id}",
-        IPv4Address("198.51.100.9"),
+        instance_id,
+        IPv4Address("10.0.0.4"),
+        None,
         "m5.xlarge",
-        state,
-        datetime(2026, 8, 1, tzinfo=UTC),
-        allocation_id,
-        eip_created_at,
+        "stopped",
+        datetime(2026, 8, 20, tzinfo=UTC),
     )
 
 
-def expected_request(instance_ids: list[str]) -> dict[str, object]:
-    return {
-        "TimePeriod": {"Start": "2026-08-06", "End": "2026-08-20"},
-        "Granularity": "DAILY",
-        "Filter": {
-            "And": [
-                {
-                    "Dimensions": {
-                        "Key": "SERVICE",
-                        "Values": ["Amazon Elastic Compute Cloud - Compute"],
-                    }
-                },
-                {
-                    "Dimensions": {
-                        "Key": "RESOURCE_ID",
-                        "Values": sorted(instance_ids),
-                    }
-                },
-            ]
-        },
-        "GroupBy": [{"Type": "DIMENSION", "Key": "RESOURCE_ID"}],
-        "Metrics": ["UnblendedCost"],
-    }
+def row(*values: str):
+    return {"Data": [{"VarCharValue": value} for value in values]}
 
 
-def test_costs_combine_ec2_actual_and_stopped_vm_eip_estimate() -> None:
-    ce = client()
-    stubber = Stubber(ce)
-    stubber.add_response(
-        "get_cost_and_usage_with_resources",
-        {
-            "ResultsByTime": [
-                {
-                    "TimePeriod": {"Start": "2026-08-06", "End": "2026-08-07"},
-                    "Estimated": False,
-                    "Groups": [
-                        {
-                            "Keys": ["i-a"],
-                            "Metrics": {
-                                "UnblendedCost": {"Amount": "0.30", "Unit": "USD"}
-                            },
-                        }
-                    ],
+class FakeAthena:
+    def __init__(self, *, state="SUCCEEDED", reason="", pages=None):
+        self.state = state
+        self.reason = reason
+        self.pages = pages or [{"ResultSet": {"Rows": []}}]
+        self.start_calls = []
+        self.execution_calls = []
+        self.result_calls = []
+        self.start_error = None
+
+    def start_query_execution(self, **kwargs):
+        self.start_calls.append(kwargs)
+        if self.start_error:
+            raise self.start_error
+        return {"QueryExecutionId": "query-123"}
+
+    def get_query_execution(self, **kwargs):
+        self.execution_calls.append(kwargs)
+        return {
+            "QueryExecution": {
+                "Status": {
+                    "State": self.state,
+                    "StateChangeReason": self.reason,
                 }
-            ]
-        },
-        expected_request(["i-a"]),
-    )
-    instance = vm(
-        "i-a",
-        state="stopped",
-        allocation_id="eipalloc-a",
-        eip_created_at=datetime(2026, 8, 19, tzinfo=UTC),
-    )
+            }
+        }
 
-    with stubber:
-        cost = CostService(ce, public_ipv4_hourly_usd=Decimal("0.005")).get_costs(
-            [instance], datetime(2026, 8, 20, 12, tzinfo=UTC)
-        )["i-a"]
-
-    assert cost.ec2_amount == Decimal("0.30")
-    assert cost.eip_amount == Decimal("0.180")
-    assert cost.total_amount == Decimal("0.480")
+    def get_query_results(self, **kwargs):
+        self.result_calls.append(kwargs)
+        index = 0 if "NextToken" not in kwargs else int(kwargs["NextToken"])
+        result = dict(self.pages[index])
+        if index + 1 < len(self.pages):
+            result["NextToken"] = str(index + 1)
+        return result
 
 
-def test_eip_estimate_is_capped_at_fourteen_days() -> None:
-    ce = client()
-    stubber = Stubber(ce)
-    stubber.add_response(
-        "get_cost_and_usage_with_resources",
-        {"ResultsByTime": []},
-        expected_request(["i-a"]),
-    )
-    instance = vm(
-        "i-a",
-        allocation_id="eipalloc-a",
-        eip_created_at=datetime(2026, 8, 1, tzinfo=UTC),
+def service(client, **kwargs):
+    return CostService(
+        client,
+        database="vms_portal_costs",
+        table="cur2",
+        workgroup="vms-portal-costs",
+        sleeper=lambda _: None,
+        **kwargs,
     )
 
-    with stubber:
-        cost = CostService(ce).get_costs(
-            [instance], datetime(2026, 8, 20, 12, tzinfo=UTC)
-        )["i-a"]
 
-    assert cost.eip_amount == Decimal("1.680")
-
-
-def test_missing_eip_is_zero_but_missing_eip_timestamp_is_unavailable() -> None:
-    ce = client()
-    stubber = Stubber(ce)
-    stubber.add_response(
-        "get_cost_and_usage_with_resources",
-        {"ResultsByTime": []},
-        expected_request(["i-no-eip", "i-no-time"]),
-    )
-    instances = [
-        vm("i-no-eip"),
-        vm("i-no-time", allocation_id="eipalloc-no-time"),
-    ]
-
-    with stubber:
-        costs = CostService(ce).get_costs(
-            instances, datetime(2026, 8, 20, 12, tzinfo=UTC)
-        )
-
-    assert costs["i-no-eip"].eip_amount == Decimal(0)
-    assert costs["i-no-eip"].total_amount == Decimal(0)
-    assert costs["i-no-time"].eip_amount is None
-    assert costs["i-no-time"].total_amount is None
-
-
-def test_cost_explorer_failure_keeps_eip_estimate_available() -> None:
-    ce = client()
-    stubber = Stubber(ce)
-    stubber.add_client_error(
-        "get_cost_and_usage_with_resources",
-        service_error_code="AccessDeniedException",
-        service_message="denied",
-        expected_params=expected_request(["i-a"]),
-    )
-    instance = vm(
-        "i-a",
-        allocation_id="eipalloc-a",
-        eip_created_at=datetime(2026, 8, 19, tzinfo=UTC),
+def test_batches_visible_instances_into_one_sixty_day_effective_cost_query() -> None:
+    client = FakeAthena(
+        pages=[
+            {
+                "ResultSet": {
+                    "Rows": [
+                        row(
+                            "instance_id",
+                            "amount",
+                            "currency",
+                            "period_start",
+                            "period_end",
+                        ),
+                        row(
+                            "i-11111111111111111",
+                            "12.50",
+                            "USD",
+                            "2026-07-01",
+                            "2026-08-28",
+                        ),
+                        row(
+                            "i-22222222222222222",
+                            "0",
+                            "USD",
+                            "2026-08-01",
+                            "2026-08-28",
+                        ),
+                    ]
+                }
+            }
+        ]
     )
 
-    with stubber:
-        cost = CostService(ce).get_costs(
-            [instance], datetime(2026, 8, 20, 12, tzinfo=UTC)
-        )["i-a"]
-
-    assert cost.ec2_amount is None
-    assert cost.eip_amount == Decimal("0.180")
-    assert cost.total_amount is None
-
-
-def test_cost_cache_avoids_second_api_request_for_six_hours() -> None:
-    ce = client()
-    stubber = Stubber(ce)
-    stubber.add_response(
-        "get_cost_and_usage_with_resources",
-        {"ResultsByTime": []},
-        expected_request(["i-a"]),
+    result = service(client).get_costs(
+        [vm("i-11111111111111111"), vm("i-22222222222222222")],
+        datetime(2026, 8, 29, tzinfo=UTC),
     )
-    service = CostService(ce)
-    instance = vm("i-a")
 
-    with stubber:
-        first = service.get_costs([instance], datetime(2026, 8, 20, 1, tzinfo=UTC))
-        second = service.get_costs(
-            [instance], datetime(2026, 8, 20, 6, 59, tzinfo=UTC)
-        )
+    assert len(client.start_calls) == 1
+    query = client.start_calls[0]["QueryString"]
+    assert 'FROM "vms_portal_costs"."cur2"' in query
+    assert "SavingsPlanCoveredUsage" in query
+    assert "savings_plan_savings_plan_effective_cost" in query
+    assert "DiscountedUsage" in query
+    assert "reservation_effective_cost" in query
+    assert "line_item_unblended_cost" in query
+    assert "2026-07-01" in query and "2026-08-30" in query
+    assert client.start_calls[0]["WorkGroup"] == "vms-portal-costs"
+    assert result["i-11111111111111111"].status == "ready"
+    assert result["i-11111111111111111"].amount == Decimal("12.50")
+    assert result["i-11111111111111111"].period_start == date(2026, 7, 1)
+    assert result["i-22222222222222222"].status == "ready"
+    assert result["i-22222222222222222"].amount == Decimal(0)
 
-    assert first == second
+
+def test_pages_results_and_marks_instances_without_history_not_ready() -> None:
+    client = FakeAthena(
+        pages=[
+            {"ResultSet": {"Rows": [row("headers")]}},
+            {
+                "ResultSet": {
+                    "Rows": [
+                        row(
+                            "i-11111111111111111",
+                            "1.00",
+                            "USD",
+                            "2026-08-01",
+                            "2026-08-28",
+                        )
+                    ]
+                }
+            },
+        ]
+    )
+
+    result = service(client).get_costs(
+        [vm("i-11111111111111111"), vm("i-22222222222222222")],
+        datetime(2026, 8, 29, tzinfo=UTC),
+    )
+
+    assert len(client.result_calls) == 2
+    assert result["i-11111111111111111"].status == "ready"
+    assert result["i-22222222222222222"].status == "not_ready"
+
+
+def test_missing_cur_table_is_not_ready_but_other_query_failure_is_failed() -> None:
+    now = datetime(2026, 8, 29, tzinfo=UTC)
+    missing = service(FakeAthena(state="FAILED", reason="TABLE_NOT_FOUND: cur2"))
+    failed = service(FakeAthena(state="FAILED", reason="GENERIC_INTERNAL_ERROR"))
+
+    assert (
+        missing.get_costs([vm("i-11111111111111111")], now)[
+            "i-11111111111111111"
+        ].status
+        == "not_ready"
+    )
+    assert (
+        failed.get_costs([vm("i-11111111111111111")], now)["i-11111111111111111"].status
+        == "failed"
+    )
+
+
+def test_athena_api_failure_is_failed_and_cached_for_six_hours() -> None:
+    client = FakeAthena()
+    client.start_error = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+        "StartQueryExecution",
+    )
+    costs = service(client)
+    instances = [vm("i-11111111111111111")]
+    now = datetime(2026, 8, 29, tzinfo=UTC)
+
+    first = costs.get_costs(instances, now)
+    second = costs.get_costs(instances, now.replace(hour=5))
+
+    assert first[instances[0].instance_id].status == "failed"
+    assert second == first
+    assert len(client.start_calls) == 1
+
+
+def test_malformed_athena_result_is_reported_as_failed() -> None:
+    client = FakeAthena(
+        pages=[
+            {
+                "ResultSet": {
+                    "Rows": [
+                        row("headers"),
+                        row("i-11111111111111111", "not-a-number", "USD", "", ""),
+                    ]
+                }
+            }
+        ]
+    )
+
+    result = service(client).get_costs(
+        [vm("i-11111111111111111")], datetime(2026, 8, 29, tzinfo=UTC)
+    )
+
+    assert result["i-11111111111111111"].status == "failed"

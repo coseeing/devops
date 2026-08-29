@@ -32,6 +32,9 @@
           AWS_REGION=ap-northeast-1
           AUTH_SECRET_ID={{ auth_secret_id }}
           ASSIGNMENTS_DB_PATH=/data/vms-portal/data/portal.db
+          COST_DATABASE={{ cost_database }}
+          COST_TABLE={{ cost_table }}
+          COST_WORKGROUP={{ cost_workgroup }}
           TRUSTED_PROXY_IPS=127.0.0.1
 
     - name: Write portal Compose file

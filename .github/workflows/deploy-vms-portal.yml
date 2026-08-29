@@ -50,6 +50,7 @@ jobs:
       IMAGE_TAG: ${{ github.sha }}
       ACCESS_STACK_NAME: vms-portal-access
       FOUNDATION_STACK_NAME: vms-portal-foundation
+      CUR_EXPORT_STACK_NAME: vms-portal-cur-export
       RUNTIME_ROLE_NAME: coseeing-ec2-common
       AUTH_SECRET_ID: ${{ inputs.auth_secret_id }}
     steps:
@@ -87,6 +88,16 @@ jobs:
           COST_DATABASE=$(jq -r '.[] | select(.OutputKey == "CostDatabaseName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
           COST_TABLE=$(jq -r '.[] | select(.OutputKey == "CostTableName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
           COST_WORKGROUP=$(jq -r '.[] | select(.OutputKey == "CostWorkGroupName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+
+          aws cloudformation deploy \
+            --region us-east-1 \
+            --stack-name "$CUR_EXPORT_STACK_NAME" \
+            --template-file cloudformation/vms-portal-cur-export-template.yml \
+            --parameter-overrides \
+              CostDataBucketName="$COST_DATA_BUCKET" \
+              CostDataBucketRegion="$AWS_REGION" \
+            --no-fail-on-empty-changeset
+
           SHUTDOWN_CODE_KEY="lambda/windows-vm-shutdown/${GITHUB_SHA}.zip"
           zip -X -j /tmp/windows-vm-shutdown.zip \
             lambda/windows_vm_shutdown/lambda_function.py
@@ -172,11 +183,14 @@ jobs:
       - name: Deploy with Ansible
         env:
           HOST_IP: ${{ steps.prepare.outputs.host_ip }}
+          COST_DATABASE: ${{ steps.prepare.outputs.cost_database }}
+          COST_TABLE: ${{ steps.prepare.outputs.cost_table }}
+          COST_WORKGROUP: ${{ steps.prepare.outputs.cost_workgroup }}
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           set -euo pipefail
           printf '[portal]\n%s ansible_user=ubuntu\n' "$HOST_IP" > inventory
-          ansible-playbook -i inventory -e "deploy_tag=$IMAGE_TAG" -e "auth_secret_id=$AUTH_SECRET_ID" -e "deploy_domain=vms.coseeing.org" ansible_yaml/vms-portal-playbook.yml
+          ansible-playbook -i inventory -e "deploy_tag=$IMAGE_TAG" -e "auth_secret_id=$AUTH_SECRET_ID" -e "deploy_domain=vms.coseeing.org" -e "cost_database=$COST_DATABASE" -e "cost_table=$COST_TABLE" -e "cost_workgroup=$COST_WORKGROUP" ansible_yaml/vms-portal-playbook.yml
       - name: Verify portal health
         run: |
           set -euo pipefail

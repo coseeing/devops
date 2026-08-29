@@ -41,11 +41,7 @@ class FakeEc2:
 def page(*instance_ids):
     return {
         "Reservations": [
-            {
-                "Instances": [
-                    {"InstanceId": instance_id} for instance_id in instance_ids
-                ]
-            }
+            {"Instances": [{"InstanceId": instance_id} for instance_id in instance_ids]}
         ]
     }
 

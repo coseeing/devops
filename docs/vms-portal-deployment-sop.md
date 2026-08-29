@@ -34,7 +34,7 @@ OIDC role 必須允許 workflow 執行下列範圍：
 
 - 查詢 `prod/vms-portal/auth` 的 ARN。
 - 建立/查詢 ECR repository `vms-portal` 並 push image。
-- 建立或更新 CloudFormation stack `vms-portal-foundation` 與 `vms-portal-access`。
+- 在 `ap-northeast-1` 建立或更新 CloudFormation stack `vms-portal-foundation` 與 `vms-portal-access`，並在 BCM Data Exports 唯一支援的 `us-east-1` 建立 `vms-portal-cur-export`。
 - 管理受限範圍的 BCM Data Exports、S3、Glue、Athena、Lambda、SQS 與 EventBridge Scheduler 資源，並將 Lambda code artifact 上傳至 foundation stack 建立的 versioned bucket。
 - 對 role `coseeing-ec2-common` 管理 inline policy `vms-portal-runtime`。
 - 建立 `/coseeing/vms-portal` log group。
@@ -75,7 +75,7 @@ Linux EC2 不需要 `ec2:*`、`iam:*`、`secretsmanager:*` 或 ECR push 權限�
 
 - DNS：將 `vms.coseeing.org` 的 A/AAAA 記錄指向既有 Traefik Linux EC2。
 - Windows VM：新版 `windows-a11y-instance-template.yml` 已自動加入 `VmPortalManaged=true`。既有 VM 必須補上相同 tag，否則 Portal 不會顯示或控制它。
-- CUR 2.0：deploy workflow 先建立加密、封鎖公開存取的 cost bucket、resource-ID Data Export、固定 Glue schema 與受 scan limit 保護的 Athena workgroup，再更新 Portal runtime IAM。首次報表通常需等待最多 24 小時；若帳號沒有可用的舊月份檔案，近 60 天畫面會明確顯示實際可用期間。需要補舊資料時由 payer/management account 向 AWS Support 申請 backfill。
+- CUR 2.0：deploy workflow 先在 Tokyo 建立加密、封鎖公開存取的 cost bucket、固定 Glue schema 與受 scan limit 保護的 Athena workgroup，再從 `us-east-1` stack 建立 resource-ID Data Export，最後更新 Portal runtime IAM。首次報表通常需等待最多 24 小時；若帳號沒有可用的舊月份檔案，近 60 天畫面會明確顯示實際可用期間。需要補舊資料時由 payer/management account 向 AWS Support 申請 backfill。
 
 Portal 不再使用 Cost Explorer 的 14 天 resource API，也不估算 EIP 成本。CUR query 對每個 instance 使用 Savings Plan effective cost、RI effective cost或 unblended cost 的適用值，並區分數字 `0`、報表尚未準備及查詢失敗。
 

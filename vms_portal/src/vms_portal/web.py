@@ -16,8 +16,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .audit import AuditEvent, AuditLogger
 from .assignments import AssignmentRepository
+from .audit import AuditEvent, AuditLogger
 from .config import Settings
 from .costs import CostService
 from .ec2 import Ec2Service, VmError
@@ -55,9 +55,11 @@ def create_app(
         boto3.client("ec2", region_name=settings.aws_region)
     )
     cost_service = cost_service or CostService(
-        boto3.client("ce", region_name="us-east-1"),
-        settings.cost_cache_seconds,
-        settings.public_ipv4_hourly_usd,
+        boto3.client("athena", region_name=settings.aws_region),
+        database=settings.cost_database,
+        table=settings.cost_table,
+        workgroup=settings.cost_workgroup,
+        cache_seconds=settings.cost_cache_seconds,
     )
     assignment_repository = assignment_repository or AssignmentRepository(
         settings.assignments_db_path
@@ -219,9 +221,7 @@ def create_app(
             )
         vms = ec2_service.list_managed()
         costs = cost_service.get_costs(vms, datetime.now(UTC))
-        assignments = assignment_repository.get_many(
-            vm.instance_id for vm in vms
-        )
+        assignments = assignment_repository.get_many(vm.instance_id for vm in vms)
         return render(
             request,
             "admin.html",
