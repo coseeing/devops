@@ -118,6 +118,8 @@ def test_batches_visible_instances_into_one_sixty_day_effective_cost_query() -> 
     assert "DiscountedUsage" in query
     assert "reservation_effective_cost" in query
     assert "line_item_unblended_cost" in query
+    assert "WHEN line_item_line_item_type = 'Usage'" in query
+    assert "ELSE CAST(0 AS DECIMAL(38,18))" in query
     assert "2026-07-01" in query and "2026-08-30" in query
     assert client.start_calls[0]["WorkGroup"] == "vms-portal-costs"
     assert result["i-11111111111111111"].status == "ready"
@@ -157,7 +159,9 @@ def test_pages_results_and_marks_instances_without_history_not_ready() -> None:
     assert result["i-22222222222222222"].status == "not_ready"
 
 
-def test_missing_cur_table_is_not_ready_but_other_query_failure_is_failed() -> None:
+def test_missing_cur_table_is_not_ready_but_other_query_failure_is_failed(
+    caplog,
+) -> None:
     now = datetime(2026, 8, 29, tzinfo=UTC)
     missing = service(FakeAthena(state="FAILED", reason="TABLE_NOT_FOUND: cur2"))
     failed = service(FakeAthena(state="FAILED", reason="GENERIC_INTERNAL_ERROR"))
@@ -172,12 +176,16 @@ def test_missing_cur_table_is_not_ready_but_other_query_failure_is_failed() -> N
         failed.get_costs([vm("i-11111111111111111")], now)["i-11111111111111111"].status
         == "failed"
     )
+    assert "query-123" in caplog.text
 
 
-def test_athena_api_failure_is_failed_and_cached_for_six_hours() -> None:
+def test_athena_api_failure_is_failed_and_cached_for_six_hours(caplog) -> None:
     client = FakeAthena()
     client.start_error = ClientError(
-        {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+        {
+            "Error": {"Code": "AccessDeniedException", "Message": "denied"},
+            "ResponseMetadata": {"RequestId": "request-123"},
+        },
         "StartQueryExecution",
     )
     costs = service(client)
@@ -190,6 +198,8 @@ def test_athena_api_failure_is_failed_and_cached_for_six_hours() -> None:
     assert first[instances[0].instance_id].status == "failed"
     assert second == first
     assert len(client.start_calls) == 1
+    assert "AccessDeniedException" in caplog.text
+    assert "request-123" in caplog.text
 
 
 def test_malformed_athena_result_is_reported_as_failed() -> None:

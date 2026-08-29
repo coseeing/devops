@@ -30,7 +30,9 @@ def stop_managed_instances(ec2_client):
             ec2_client.stop_instances(InstanceIds=batch)
         except Exception:
             LOGGER.exception(
-                "managed VM shutdown failed",
+                "managed VM shutdown failed matched=%d stopped=%d",
+                len(instance_ids),
+                stopped,
                 extra={"matched": len(instance_ids), "stopped": stopped},
             )
             raise

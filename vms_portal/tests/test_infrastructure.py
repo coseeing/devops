@@ -130,6 +130,7 @@ def test_scheduler_stops_managed_windows_vms_at_one_am_taipei() -> None:
     template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
     schedule = template["Resources"]["NightlyShutdownSchedule"]
     assert schedule["Type"] == "AWS::Scheduler::Schedule"
+    assert schedule["Properties"]["Name"] == "vms-portal-nightly-shutdown"
     assert schedule["Properties"]["ScheduleExpression"] == "cron(0 1 * * ? *)"
     assert schedule["Properties"]["ScheduleExpressionTimezone"] == "Asia/Taipei"
     assert schedule["Properties"]["FlexibleTimeWindow"] == {"Mode": "OFF"}
@@ -304,6 +305,23 @@ def test_deploy_workflow_requires_exact_domain_confirmation() -> None:
         deploy["if"]
         == "inputs.action == 'deploy' && inputs.confirm_domain == 'vms.coseeing.org'"
     )
+
+
+def test_deploy_workflow_validates_lambda_and_cloudformation() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/deploy-vms-portal.yml").read_text()
+    )
+    steps = workflow["jobs"]["validate"]["steps"]
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    assert "../lambda/windows_vm_shutdown/tests" in commands
+    assert "cfn-lint" in commands
+    for template in (
+        "vms-portal-foundation-template.yml",
+        "vms-portal-cur-export-template.yml",
+        "vms-portal-access-template.yml",
+        "windows-a11y-instance-template.yml",
+    ):
+        assert template in commands
 
 
 def test_deploy_workflow_derives_immutable_image_tag_and_defaults_secret() -> None:

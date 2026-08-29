@@ -73,9 +73,11 @@ def test_stops_all_instances_in_bounded_batches() -> None:
     assert [len(call["InstanceIds"]) for call in ec2.stop_calls] == [1000, 1]
 
 
-def test_stop_failure_is_propagated() -> None:
+def test_stop_failure_is_logged_and_propagated(caplog) -> None:
     ec2 = FakeEc2([page("i-1234567890abcdef0")])
     ec2.error = RuntimeError("stop failed")
 
     with pytest.raises(RuntimeError, match="stop failed"):
         module.stop_managed_instances(ec2)
+
+    assert "matched=1 stopped=0" in caplog.text

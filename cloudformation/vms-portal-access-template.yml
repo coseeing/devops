@@ -117,6 +117,7 @@ Resources:
   NightlyShutdownSchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
+      Name: vms-portal-nightly-shutdown
       Description: Stop all running VmPortalManaged Windows instances every night
       ScheduleExpression: cron(0 1 * * ? *)
       ScheduleExpressionTimezone: Asia/Taipei

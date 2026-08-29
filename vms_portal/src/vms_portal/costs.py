@@ -94,7 +94,8 @@ class CostService:
                     else "failed"
                 )
                 self._logger.error(
-                    "Athena cost query ended in %s: %s",
+                    "Athena cost query %s ended in %s: %s",
+                    query_id,
                     status,
                     reason,
                     extra={"query_execution_id": query_id},
@@ -105,8 +106,10 @@ class CostService:
         except ClientError as exc:
             metadata = exc.response.get("ResponseMetadata", {})
             self._logger.exception(
-                "Athena cost API failure: %s",
+                "Athena cost API failure code=%s request_id=%s query_id=%s",
                 exc.response.get("Error", {}).get("Code", "unknown"),
+                metadata.get("RequestId", "unknown"),
+                query_id or "not-started",
                 extra={
                     "aws_request_id": metadata.get("RequestId"),
                     "query_execution_id": query_id,
@@ -115,7 +118,8 @@ class CostService:
             result = self._empty(instance_ids, "failed", now, query_id)
         except (InvalidOperation, ValueError, KeyError, IndexError):
             self._logger.exception(
-                "Athena cost result could not be parsed",
+                "Athena cost result could not be parsed query_id=%s",
+                query_id or "not-started",
                 extra={"query_execution_id": query_id},
             )
             result = self._empty(instance_ids, "failed", now, query_id)
@@ -141,7 +145,9 @@ SELECT
         THEN savings_plan_savings_plan_effective_cost
       WHEN line_item_line_item_type = 'DiscountedUsage'
         THEN reservation_effective_cost
-      ELSE line_item_unblended_cost
+      WHEN line_item_line_item_type = 'Usage'
+        THEN line_item_unblended_cost
+      ELSE CAST(0 AS DECIMAL(38,18))
     END
   ) AS amount,
   MAX(line_item_currency_code) AS currency,

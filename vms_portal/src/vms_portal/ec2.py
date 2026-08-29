@@ -5,6 +5,8 @@ from datetime import datetime
 from ipaddress import IPv4Address
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 
 class VmError(RuntimeError):
     pass
@@ -59,7 +61,15 @@ class Ec2Service:
         return sorted(instances, key=lambda vm: (vm.name.casefold(), vm.instance_id))
 
     def find_managed_by_instance_id(self, instance_id: str) -> VmInstance | None:
-        response = self._client.describe_instances(InstanceIds=[instance_id])
+        try:
+            response = self._client.describe_instances(InstanceIds=[instance_id])
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "InvalidInstanceID.NotFound"
+            ):
+                return None
+            raise
         instances = _normalize_page(response)
         if not instances:
             return None

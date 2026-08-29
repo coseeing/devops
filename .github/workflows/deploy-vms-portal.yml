@@ -33,6 +33,15 @@ jobs:
         working-directory: vms_portal
       - run: uv run pytest
         working-directory: vms_portal
+      - run: uv run pytest ../lambda/windows_vm_shutdown/tests
+        working-directory: vms_portal
+      - name: Validate CloudFormation templates
+        run: >-
+          uvx cfn-lint
+          cloudformation/vms-portal-foundation-template.yml
+          cloudformation/vms-portal-cur-export-template.yml
+          cloudformation/vms-portal-access-template.yml
+          cloudformation/windows-a11y-instance-template.yml
       - run: docker build -t vms-portal:validate vms_portal
 
   deploy:

@@ -100,6 +100,22 @@ def test_user_lookup_requires_exact_instance_id_and_tag() -> None:
     assert str(found.private_ip) == "10.0.0.4"
 
 
+def test_user_lookup_returns_none_when_instance_id_does_not_exist() -> None:
+    ec2 = client()
+    stubber = Stubber(ec2)
+    stubber.add_client_error(
+        "describe_instances",
+        service_error_code="InvalidInstanceID.NotFound",
+        service_message="The instance ID does not exist",
+        expected_params={"InstanceIds": ["i-00000000000000000"]},
+    )
+
+    with stubber:
+        found = Ec2Service(ec2).find_managed_by_instance_id("i-00000000000000000")
+
+    assert found is None
+
+
 def test_normalization_allows_missing_dynamic_public_ip() -> None:
     ec2 = client()
     stubber = Stubber(ec2)
