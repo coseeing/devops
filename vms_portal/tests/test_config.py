@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
-
 import pytest
 from vms_portal.config import ConfigurationError, Settings
 
@@ -19,7 +17,7 @@ def test_defaults_are_safe_and_region_is_fixed() -> None:
     assert settings.managed_tag_value == "true"
     assert settings.session_cookie_name == "vms_portal_session"
     assert settings.cost_cache_seconds == 21_600
-    assert settings.public_ipv4_hourly_usd == Decimal("0.005")
+    assert str(settings.assignments_db_path) == "/data/vms-portal/data/portal.db"
     assert settings.trusted_proxy_ips == ("127.0.0.1", "::1")
 
 
@@ -44,25 +42,22 @@ def test_proxy_ips_are_trimmed_and_empty_entries_removed() -> None:
     assert settings.trusted_proxy_ips == ("127.0.0.1", "172.18.0.2", "::1")
 
 
-def test_public_ipv4_hourly_rate_can_be_overridden() -> None:
+def test_assignments_database_path_can_be_overridden() -> None:
     settings = Settings.from_env(
         {
             "AUTH_SECRET_ID": "prod/vms-portal/auth",
-            "PUBLIC_IPV4_HOURLY_USD": "0.00625",
+            "ASSIGNMENTS_DB_PATH": "/tmp/portal.db",
         }
     )
 
-    assert settings.public_ipv4_hourly_usd == Decimal("0.00625")
+    assert str(settings.assignments_db_path) == "/tmp/portal.db"
 
 
-@pytest.mark.parametrize("value", ["-0.001", "NaN", "Infinity", "not-a-price"])
-def test_public_ipv4_hourly_rate_must_be_a_non_negative_finite_decimal(
-    value: str,
-) -> None:
-    with pytest.raises(ConfigurationError, match="PUBLIC_IPV4_HOURLY_USD"):
+def test_assignments_database_path_must_be_absolute() -> None:
+    with pytest.raises(ConfigurationError, match="ASSIGNMENTS_DB_PATH"):
         Settings.from_env(
             {
                 "AUTH_SECRET_ID": "prod/vms-portal/auth",
-                "PUBLIC_IPV4_HOURLY_USD": value,
+                "ASSIGNMENTS_DB_PATH": "relative/portal.db",
             }
         )

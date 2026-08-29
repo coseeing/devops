@@ -170,10 +170,15 @@ def test_deployment_is_non_root_read_only_and_uses_exact_domain() -> None:
     traefik = (ROOT / "ansible_yaml/extra/vms-portal.yml").read_text()
 
     assert "USER app" in dockerfile
+    assert "--uid 10001" in dockerfile
+    assert "--gid 10001" in dockerfile
     assert "read_only: true" in playbook
     assert "no-new-privileges:true" in playbook
     assert "AUTH_SECRET_ID" in playbook and "secret_data" not in playbook
-    assert "PUBLIC_IPV4_HOURLY_USD=0.005" in playbook
+    assert "ASSIGNMENTS_DB_PATH=/data/vms-portal/data/portal.db" in playbook
+    assert "path: /data/vms-portal/data" in playbook
+    assert "owner: 10001" in playbook
+    assert "- /data/vms-portal/data:/data/vms-portal/data" in playbook
     assert "vms.coseeing.org" in traefik
 
 

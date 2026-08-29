@@ -16,6 +16,14 @@
     - name: Include common preparation
       include_tasks: common/pre-common.yml
 
+    - name: Create persistent portal data directory
+      file:
+        path: /data/vms-portal/data
+        state: directory
+        owner: 10001
+        group: 10001
+        mode: "0750"
+
     - name: Write portal environment
       copy:
         dest: "{{ docker_compose_dir }}/.env"
@@ -23,7 +31,7 @@
         content: |
           AWS_REGION=ap-northeast-1
           AUTH_SECRET_ID={{ auth_secret_id }}
-          PUBLIC_IPV4_HOURLY_USD=0.005
+          ASSIGNMENTS_DB_PATH=/data/vms-portal/data/portal.db
           TRUSTED_PROXY_IPS=127.0.0.1
 
     - name: Write portal Compose file
@@ -39,6 +47,8 @@
               read_only: true
               tmpfs:
                 - /tmp:size=16m,mode=1777
+              volumes:
+                - /data/vms-portal/data:/data/vms-portal/data
               security_opt:
                 - no-new-privileges:true
               networks:

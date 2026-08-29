@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 
 class ConfigurationError(ValueError):
@@ -42,6 +43,7 @@ class Settings:
     trusted_proxy_ips: tuple[str, ...] = ("127.0.0.1", "::1")
     cost_cache_seconds: int = 21_600
     public_ipv4_hourly_usd: Decimal = Decimal("0.005")
+    assignments_db_path: Path = Path("/data/vms-portal/data/portal.db")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -55,6 +57,11 @@ class Settings:
         )
         if not proxy_ips:
             raise ConfigurationError("TRUSTED_PROXY_IPS must contain at least one IP")
+        assignments_db_path = Path(
+            env.get("ASSIGNMENTS_DB_PATH", "/data/vms-portal/data/portal.db")
+        )
+        if not assignments_db_path.is_absolute():
+            raise ConfigurationError("ASSIGNMENTS_DB_PATH must be an absolute path")
         return cls(
             auth_secret_id=secret_id,
             trusted_proxy_ips=proxy_ips,
@@ -62,4 +69,5 @@ class Settings:
             public_ipv4_hourly_usd=_non_negative_decimal(
                 env, "PUBLIC_IPV4_HOURLY_USD", "0.005"
             ),
+            assignments_db_path=assignments_db_path,
         )
