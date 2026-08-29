@@ -23,6 +23,156 @@ Resources:
             NoncurrentVersionExpiration:
               NoncurrentDays: 30
 
+  CostDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAthenaResults
+            Status: Enabled
+            Prefix: athena-results/
+            ExpirationInDays: 30
+
+  CostDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CostDataBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAWSDataExportsToWriteToS3
+            Effect: Allow
+            Principal:
+              Service: bcm-data-exports.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${CostDataBucket.Arn}/vms-portal-cur/*
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:bcm-data-exports:us-east-1:${AWS::AccountId}:export/*
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  PortalCurExport:
+    Type: AWS::BCMDataExports::Export
+    DependsOn: CostDataBucketPolicy
+    Properties:
+      Export:
+        Name: vms_portal_cur
+        Description: Minimal resource-level EC2 cost data for the Windows VM portal
+        DataQuery:
+          QueryStatement: >-
+            SELECT bill_billing_period_start_date,
+            line_item_resource_id,
+            line_item_usage_start_date,
+            line_item_unblended_cost,
+            reservation_effective_cost,
+            savings_plan_savings_plan_effective_cost
+            FROM COST_AND_USAGE_REPORT
+          TableConfigurations:
+            COST_AND_USAGE_REPORT:
+              INCLUDE_RESOURCES: "TRUE"
+              INCLUDE_SPLIT_COST_ALLOCATION_DATA: "FALSE"
+              TIME_GRANULARITY: "DAILY"
+        DestinationConfigurations:
+          S3Destination:
+            S3Bucket: !Ref CostDataBucket
+            S3BucketOwner: !Ref AWS::AccountId
+            S3Prefix: vms-portal-cur
+            S3Region: !Ref AWS::Region
+            S3OutputConfigurations:
+              Compression: PARQUET
+              Format: PARQUET
+              OutputType: CUSTOM
+              Overwrite: OVERWRITE_REPORT
+        RefreshCadence:
+          Frequency: SYNCHRONOUS
+
+  CostDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: vms_portal_costs
+        Description: CUR 2.0 database for the Windows VM portal
+
+  CostTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref CostDatabase
+      TableInput:
+        Name: cur2
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          projection.enabled: "true"
+          projection.billing_period.type: date
+          projection.billing_period.range: 2025-01,NOW
+          projection.billing_period.format: yyyy-MM
+          projection.billing_period.interval: "1"
+          projection.billing_period.interval.unit: MONTHS
+          storage.location.template: !Sub s3://${CostDataBucket}/vms-portal-cur/vms_portal_cur/data/BILLING_PERIOD=${!billing_period}/
+        PartitionKeys:
+          - Name: billing_period
+            Type: string
+        StorageDescriptor:
+          Location: !Sub s3://${CostDataBucket}/vms-portal-cur/vms_portal_cur/data/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: bill_billing_period_start_date
+              Type: timestamp
+            - Name: line_item_resource_id
+              Type: string
+            - Name: line_item_usage_start_date
+              Type: timestamp
+            - Name: line_item_unblended_cost
+              Type: decimal(38,18)
+            - Name: reservation_effective_cost
+              Type: decimal(38,18)
+            - Name: savings_plan_savings_plan_effective_cost
+              Type: decimal(38,18)
+
+  CostWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: vms-portal-costs
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        BytesScannedCutoffPerQuery: 1073741824
+        ResultConfiguration:
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+          OutputLocation: !Sub s3://${CostDataBucket}/athena-results/
+
 Outputs:
   DeploymentArtifactsBucketName:
     Value: !Ref DeploymentArtifactsBucket
+  CostDataBucketName:
+    Value: !Ref CostDataBucket
+  CostDataPrefix:
+    Value: vms-portal-cur/vms_portal_cur/data
+  CostQueryResultsPrefix:
+    Value: athena-results
+  CostDatabaseName:
+    Value: !Ref CostDatabase
+  CostTableName:
+    Value: !Ref CostTable
+  CostWorkGroupName:
+    Value: !Ref CostWorkGroup

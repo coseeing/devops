@@ -76,10 +76,17 @@ jobs:
             --template-file cloudformation/vms-portal-foundation-template.yml \
             --no-fail-on-empty-changeset
 
-          ARTIFACTS_BUCKET=$(aws cloudformation describe-stacks \
+          FOUNDATION_OUTPUTS=$(aws cloudformation describe-stacks \
             --stack-name "$FOUNDATION_STACK_NAME" \
-            --query 'Stacks[0].Outputs[?OutputKey==`DeploymentArtifactsBucketName`].OutputValue' \
-            --output text)
+            --query 'Stacks[0].Outputs' \
+            --output json)
+          ARTIFACTS_BUCKET=$(jq -r '.[] | select(.OutputKey == "DeploymentArtifactsBucketName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_DATA_BUCKET=$(jq -r '.[] | select(.OutputKey == "CostDataBucketName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_DATA_PREFIX=$(jq -r '.[] | select(.OutputKey == "CostDataPrefix") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_QUERY_RESULTS_PREFIX=$(jq -r '.[] | select(.OutputKey == "CostQueryResultsPrefix") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_DATABASE=$(jq -r '.[] | select(.OutputKey == "CostDatabaseName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_TABLE=$(jq -r '.[] | select(.OutputKey == "CostTableName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_WORKGROUP=$(jq -r '.[] | select(.OutputKey == "CostWorkGroupName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
           SHUTDOWN_CODE_KEY="lambda/windows-vm-shutdown/${GITHUB_SHA}.zip"
           zip -X -j /tmp/windows-vm-shutdown.zip \
             lambda/windows_vm_shutdown/lambda_function.py
@@ -109,6 +116,12 @@ jobs:
               ShutdownCodeS3Bucket="$ARTIFACTS_BUCKET" \
               ShutdownCodeS3Key="$SHUTDOWN_CODE_KEY" \
               ShutdownCodeS3Version="$SHUTDOWN_CODE_VERSION" \
+              CostDataBucketName="$COST_DATA_BUCKET" \
+              CostDataPrefix="$COST_DATA_PREFIX" \
+              CostQueryResultsPrefix="$COST_QUERY_RESULTS_PREFIX" \
+              CostDatabaseName="$COST_DATABASE" \
+              CostTableName="$COST_TABLE" \
+              CostWorkGroupName="$COST_WORKGROUP" \
             --no-fail-on-empty-changeset
 
           STACK_OUTPUTS=$(aws cloudformation describe-stacks \
@@ -135,6 +148,10 @@ jobs:
 
           echo "host_ip=$HOST_IP" >> "$GITHUB_OUTPUT"
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "cost_data_bucket=$COST_DATA_BUCKET" >> "$GITHUB_OUTPUT"
+          echo "cost_database=$COST_DATABASE" >> "$GITHUB_OUTPUT"
+          echo "cost_table=$COST_TABLE" >> "$GITHUB_OUTPUT"
+          echo "cost_workgroup=$COST_WORKGROUP" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         run: |
           set -euo pipefail

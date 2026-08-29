@@ -1,6 +1,6 @@
 # Windows VM Portal 部署 SOP
 
-本 SOP 部署 `https://vms.coseeing.org`，AWS Region 固定為 `ap-northeast-1`。日常部署由 GitHub Actions 完成；只有帳密、GitHub/AWS 信任關係、DNS 與 Cost Explorer 需要第一次手動設定。
+本 SOP 部署 `https://vms.coseeing.org`，AWS Region 固定為 `ap-northeast-1`。日常部署由 GitHub Actions 完成；只有帳密、GitHub/AWS 信任關係與 DNS 需要第一次手動設定。
 
 ## A. 第一次部署前：一次性設定
 
@@ -34,7 +34,8 @@ OIDC role 必須允許 workflow 執行下列範圍：
 
 - 查詢 `prod/vms-portal/auth` 的 ARN。
 - 建立/查詢 ECR repository `vms-portal` 並 push image。
-- 建立或更新 CloudFormation stack `vms-portal-access`。
+- 建立或更新 CloudFormation stack `vms-portal-foundation` 與 `vms-portal-access`。
+- 管理受限範圍的 BCM Data Exports、S3、Glue、Athena、Lambda、SQS 與 EventBridge Scheduler 資源，並將 Lambda code artifact 上傳至 foundation stack 建立的 versioned bucket。
 - 對 role `coseeing-ec2-common` 管理 inline policy `vms-portal-runtime`。
 - 建立 `/coseeing/vms-portal` log group。
 - 查詢既有 Linux EC2 stack，並設定該 instance 的 IMDSv2 metadata options。
@@ -49,11 +50,12 @@ OIDC role 必須允許 workflow 執行下列範圍：
 
 | AWS 權限 | Resource 限制 | 用途 |
 | --- | --- | --- |
-| `ec2:DescribeInstances` | `*` | admin 列出 VM、user 依 Public IPv4 查詢，以及每次開關機前重新驗證 tag/IP/狀態。此 API 不支援限制到單一 instance ARN。 |
-| `ec2:DescribeAddresses` | `*` | 讀取帶有 `VmPortalManaged=true` 的 EIP，依 Instance ID 對應 VM 並取得估算所需的建立時間 tag。此 API 不支援限制到單一 EIP ARN。 |
+| `ec2:DescribeInstances` | `*` | admin 列出 VM、user 依 Instance ID 查詢，以及每次開關機前重新驗證 tag/狀態。此 API 不支援限制到單一 instance ARN。 |
 | `ec2:StartInstances`、`ec2:StopInstances` | 本帳號、本 Region 的 EC2 instance ARN，另要求 `VmPortalManaged=true` | 只允許控制明確交由 Portal 管理的 Windows VM。 |
 | `secretsmanager:DescribeSecret`、`secretsmanager:GetSecretValue` | 建立部署時指定的單一 Secret ARN | 啟動與定期更新共用登入帳密；Secret 只保留於記憶體 cache。 |
-| `ce:GetCostAndUsageWithResources` | `*` | 查詢每台 EC2 最近 14 天的 Cost Explorer resource-level cost；此 API 不支援 resource ARN 限制。 |
+| Athena query/read | 單一 `vms-portal-costs` workgroup | 執行 Portal 的批次 60 天成本查詢並讀取結果。 |
+| Glue `GetDatabase`、`GetTable` | 單一 cost database/table 及 catalog | 解析固定 CUR 2.0 Parquet schema；不使用 crawler。 |
+| S3 list/read/write | CUR data prefix 只讀、Athena result prefix 讀寫 | 讀取 Data Export 並保存短期查詢結果；不能管理 bucket 或 export。 |
 | `logs:CreateLogStream`、`logs:PutLogEvents` | `/coseeing/vms-portal` log group 內的 stream | Docker `awslogs` driver 寫入登入及開關機 audit log。 |
 
 同一台 EC2 上的既有服務已經從 private ECR 拉取 image，因此 `coseeing-ec2-common` 的共用基礎 policy 應已具備 `ecr:GetAuthorizationToken`、`ecr:BatchCheckLayerAvailability`、`ecr:GetDownloadUrlForLayer` 與 `ecr:BatchGetImage`。這些權限不是 Portal 特有權限，不由 `vms-portal-access` stack 重複管理。可登入該 EC2 驗證目前 instance profile 是否仍能取得 ECR token：
@@ -69,13 +71,13 @@ Linux EC2 不需要 `ec2:*`、`iam:*`、`secretsmanager:*` 或 ECR push 權限�
 
 部署後可在 AWS Console 的 **IAM** → **Roles** → `coseeing-ec2-common` → **Permissions** 確認存在 `vms-portal-runtime`。若 role 名稱不同，需先調整 workflow 的 `RUNTIME_ROLE_NAME`，不要額外建立一份過度寬鬆的 policy。
 
-### 4. DNS、Windows tag 與 Cost Explorer
+### 4. DNS、Windows tag 與 CUR 2.0
 
 - DNS：將 `vms.coseeing.org` 的 A/AAAA 記錄指向既有 Traefik Linux EC2。
-- Windows VM：新版 `windows-a11y-instance-template.yml` 已自動加入 `VmPortalManaged=true`。既有 VM 必須補上相同 tag，否則 Portal 不會顯示或控制它。由 batch workflow 建立的 EIP 也會帶管理 tag、Instance index 與 `VmPortalCreatedAt`；既有 EIP 缺少建立時間時 Portal 會顯示「估算資料不足」。
-- Cost Explorer：用 payer/management account 開啟 **Billing and Cost Management** → **Cost Management preferences** → **Granular data**，啟用 EC2 resource-level data。資料只涵蓋最近 14 天，可能需等待 48 小時，且 granular data/API request 可能產生費用。
+- Windows VM：新版 `windows-a11y-instance-template.yml` 已自動加入 `VmPortalManaged=true`。既有 VM 必須補上相同 tag，否則 Portal 不會顯示或控制它。
+- CUR 2.0：deploy workflow 先建立加密、封鎖公開存取的 cost bucket、resource-ID Data Export、固定 Glue schema 與受 scan limit 保護的 Athena workgroup，再更新 Portal runtime IAM。首次報表通常需等待最多 24 小時；若帳號沒有可用的舊月份檔案，近 60 天畫面會明確顯示實際可用期間。需要補舊資料時由 payer/management account 向 AWS Support 申請 backfill。
 
-Portal 的 EC2 欄位是 Cost Explorer `UnblendedCost` 實際資料；EIP 欄位不是 Cost Explorer line item，而是依 `VmPortalCreatedAt`、最近 14 天持有小時及 `PUBLIC_IPV4_HOURLY_USD` 計算的估算。部署預設單價為 `0.005` USD/IP/hour。若 AWS 調價，先更新 `ansible_yaml/vms-portal-playbook.yml` 內的環境值再重新部署。VM 停止後 EIP 仍由帳號持有，因此估算會繼續累計。
+Portal 不再使用 Cost Explorer 的 14 天 resource API，也不估算 EIP 成本。CUR query 對每個 instance 使用 Savings Plan effective cost、RI effective cost或 unblended cost 的適用值，並區分數字 `0`、報表尚未準備及查詢失敗。
 
 以上三項無法由本 repository 的 deploy workflow 安全代辦。
 
@@ -92,7 +94,7 @@ Portal 的 EC2 欄位是 Cost Explorer `UnblendedCost` 實際資料；EIP 欄位
 Deploy job 會自動完成：
 
 - 建立 ECR repository（若不存在）。
-- 部署 runtime IAM policy 與 CloudWatch log group。
+- 依序部署 foundation、上傳 versioned shutdown Lambda、再部署 runtime IAM/Scheduler；任一步失敗都不會更新 Portal container。
 - 將 Linux EC2 設為 `HttpTokens=required`、hop limit `2`。
 - 以 Git commit SHA 作為 immutable image tag，build/push Docker image。
 - 透過 Ansible 更新 Portal/Traefik。

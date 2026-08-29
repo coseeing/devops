@@ -17,6 +17,18 @@ Parameters:
     Type: String
   ShutdownCodeS3Version:
     Type: String
+  CostDataBucketName:
+    Type: String
+  CostDataPrefix:
+    Type: String
+  CostQueryResultsPrefix:
+    Type: String
+  CostDatabaseName:
+    Type: String
+  CostTableName:
+    Type: String
+  CostWorkGroupName:
+    Type: String
 
 Resources:
   AuditLogGroup:
@@ -134,11 +146,6 @@ Resources:
             Action:
               - ec2:DescribeInstances
             Resource: "*"
-          - Sid: DescribeManagedElasticIps
-            Effect: Allow
-            Action:
-              - ec2:DescribeAddresses
-            Resource: "*"
           - Sid: StartStopManagedInstances
             Effect: Allow
             Action:
@@ -154,11 +161,45 @@ Resources:
               - secretsmanager:DescribeSecret
               - secretsmanager:GetSecretValue
             Resource: !Ref AuthSecretArn
-          - Sid: ReadResourceCosts
+          - Sid: RunPortalCostQueries
             Effect: Allow
             Action:
-              - ce:GetCostAndUsageWithResources
-            Resource: "*"
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:StopQueryExecution
+            Resource: !Sub arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${CostWorkGroupName}
+          - Sid: ReadPortalCostSchema
+            Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource:
+              - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog
+              - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${CostDatabaseName}
+              - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${CostDatabaseName}/${CostTableName}
+          - Sid: ListPortalCostBucket
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource: !Sub arn:${AWS::Partition}:s3:::${CostDataBucketName}
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - !Sub ${CostDataPrefix}/*
+                  - !Sub ${CostQueryResultsPrefix}/*
+          - Sid: ReadPortalCostData
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Sub arn:${AWS::Partition}:s3:::${CostDataBucketName}/${CostDataPrefix}/*
+          - Sid: ManagePortalQueryResults
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub arn:${AWS::Partition}:s3:::${CostDataBucketName}/${CostQueryResultsPrefix}/*
           - Sid: WritePortalLogs
             Effect: Allow
             Action:

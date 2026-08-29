@@ -161,21 +161,27 @@ def test_deploy_workflow_uploads_versioned_lambda_before_access_stack() -> None:
     )
 
 
-def test_portal_policy_can_describe_eips_but_cannot_provision_resources() -> None:
+def test_portal_policy_reads_cur_through_athena_but_cannot_provision() -> None:
     template = load_cfn(ROOT / "cloudformation/vms-portal-access-template.yml")
     statements = template["Resources"]["PortalPolicy"]["Properties"]["PolicyDocument"][
         "Statement"
     ]
-    describe_addresses = next(
-        item for item in statements if item["Action"] == ["ec2:DescribeAddresses"]
-    )
-    assert describe_addresses["Resource"] == "*"
-
     actions = {
         action for statement in statements for action in statement.get("Action", [])
     }
+    assert {
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "s3:GetObject",
+        "s3:PutObject",
+    }.issubset(actions)
     assert actions.isdisjoint(
         {
+            "ce:GetCostAndUsageWithResources",
+            "ec2:DescribeAddresses",
             "ec2:RunInstances",
             "ec2:AllocateAddress",
             "ec2:AssociateAddress",
@@ -185,6 +191,59 @@ def test_portal_policy_can_describe_eips_but_cannot_provision_resources() -> Non
             "iam:PassRole",
         }
     )
+
+
+def test_foundation_defines_cur2_parquet_glue_projection_and_athena_limits() -> None:
+    template = load_cfn(ROOT / "cloudformation/vms-portal-foundation-template.yml")
+    resources = template["Resources"]
+
+    bucket = resources["CostDataBucket"]["Properties"]
+    assert bucket["BucketEncryption"]
+    assert all(bucket["PublicAccessBlockConfiguration"].values())
+
+    export = resources["PortalCurExport"]["Properties"]["Export"]
+    query = export["DataQuery"]
+    assert "line_item_resource_id" in query["QueryStatement"]
+    assert query["TableConfigurations"]["COST_AND_USAGE_REPORT"][
+        "INCLUDE_RESOURCES"
+    ] == "TRUE"
+    destination = export["DestinationConfigurations"]["S3Destination"]
+    assert destination["S3OutputConfigurations"] == {
+        "Compression": "PARQUET",
+        "Format": "PARQUET",
+        "OutputType": "CUSTOM",
+        "Overwrite": "OVERWRITE_REPORT",
+    }
+    assert export["RefreshCadence"] == {"Frequency": "SYNCHRONOUS"}
+
+    table = resources["CostTable"]["Properties"]["TableInput"]
+    assert table["Parameters"]["projection.enabled"] == "true"
+    assert table["Parameters"]["projection.billing_period.type"] == "date"
+    assert "${!billing_period}" in table["Parameters"]["storage.location.template"]
+    assert resources["CostWorkGroup"]["Properties"]["WorkGroupConfiguration"][
+        "BytesScannedCutoffPerQuery"
+    ] == 1073741824
+    assert "Crawler" not in " ".join(resources)
+
+
+def test_deploy_workflow_passes_foundation_cost_outputs_to_access_stack() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/deploy-vms-portal.yml").read_text()
+    )
+    prepare = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Prepare AWS infrastructure"
+    )["run"]
+    for value in (
+        "CostDatabaseName",
+        "CostTableName",
+        "CostWorkGroupName",
+        "CostDataBucketName",
+        "CostQueryResultsPrefix",
+    ):
+        assert value in prepare
+    assert "CostDatabaseName=" in prepare
 
 
 def test_portal_runtime_policy_does_not_duplicate_shared_ecr_access() -> None:
