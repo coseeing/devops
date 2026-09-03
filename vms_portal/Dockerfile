@@ -1,7 +1,7 @@
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN groupadd --system app && useradd --system --gid app --home /app app
+RUN groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid 10001 --home /app app
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY src ./src

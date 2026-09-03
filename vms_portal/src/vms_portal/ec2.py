@@ -5,6 +5,8 @@ from datetime import datetime
 from ipaddress import IPv4Address
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 
 class VmError(RuntimeError):
     pass
@@ -30,6 +32,7 @@ class InvalidStateTransition(VmError):
 class VmInstance:
     instance_id: str
     name: str
+    private_ip: IPv4Address
     public_ip: IPv4Address | None
     instance_type: str
     state: str
@@ -57,18 +60,26 @@ class Ec2Service:
         ]
         return sorted(instances, key=lambda vm: (vm.name.casefold(), vm.instance_id))
 
-    def find_managed_by_public_ip(self, ip: IPv4Address) -> VmInstance | None:
-        filters = self._managed_filters()
-        filters.insert(1, {"Name": "ip-address", "Values": [str(ip)]})
-        paginator = self._client.get_paginator("describe_instances")
-        instances = [
-            vm
-            for page in paginator.paginate(Filters=filters)
-            for vm in _normalize_page(page)
-        ]
-        if len(instances) > 1:
-            raise VmError("multiple instances returned for one public IP")
-        return instances[0] if instances else None
+    def find_managed_by_instance_id(self, instance_id: str) -> VmInstance | None:
+        try:
+            response = self._client.describe_instances(InstanceIds=[instance_id])
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "InvalidInstanceID.NotFound"
+            ):
+                return None
+            raise
+        instances = _normalize_page(response)
+        if not instances:
+            return None
+        raw = response["Reservations"][0]["Instances"][0]
+        tags = {tag["Key"]: tag["Value"] for tag in raw.get("Tags", [])}
+        if tags.get(self._tag_key) != self._tag_value:
+            return None
+        if instances[0].state not in _ACTIVE_STATES:
+            return None
+        return instances[0]
 
     def start(
         self, instance_id: str, expected_public_ip: IPv4Address | None = None
@@ -125,6 +136,7 @@ def _normalize_page(page: dict[str, Any]) -> list[VmInstance]:
                 VmInstance(
                     instance_id=raw["InstanceId"],
                     name=tags.get("Name", raw["InstanceId"]),
+                    private_ip=IPv4Address(raw["PrivateIpAddress"]),
                     public_ip=IPv4Address(public_ip) if public_ip else None,
                     instance_type=raw["InstanceType"],
                     state=raw["State"]["Name"],

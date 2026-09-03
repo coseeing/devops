@@ -33,6 +33,15 @@ jobs:
         working-directory: vms_portal
       - run: uv run pytest
         working-directory: vms_portal
+      - run: uv run pytest ../lambda/windows_vm_shutdown/tests
+        working-directory: vms_portal
+      - name: Validate CloudFormation templates
+        run: >-
+          uvx cfn-lint
+          cloudformation/vms-portal-foundation-template.yml
+          cloudformation/vms-portal-cur-export-template.yml
+          cloudformation/vms-portal-access-template.yml
+          cloudformation/windows-a11y-instance-template.yml
       - run: docker build -t vms-portal:validate vms_portal
 
   deploy:
@@ -49,6 +58,8 @@ jobs:
       ECR_REPOSITORY: vms-portal
       IMAGE_TAG: ${{ github.sha }}
       ACCESS_STACK_NAME: vms-portal-access
+      FOUNDATION_STACK_NAME: vms-portal-foundation
+      CUR_EXPORT_STACK_NAME: vms-portal-cur-export
       RUNTIME_ROLE_NAME: coseeing-ec2-common
       AUTH_SECRET_ID: ${{ inputs.auth_secret_id }}
     steps:
@@ -70,6 +81,42 @@ jobs:
             --query ARN \
             --output text)
 
+          aws cloudformation deploy \
+            --stack-name "$FOUNDATION_STACK_NAME" \
+            --template-file cloudformation/vms-portal-foundation-template.yml \
+            --no-fail-on-empty-changeset
+
+          FOUNDATION_OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "$FOUNDATION_STACK_NAME" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
+          ARTIFACTS_BUCKET=$(jq -r '.[] | select(.OutputKey == "DeploymentArtifactsBucketName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_DATA_BUCKET=$(jq -r '.[] | select(.OutputKey == "CostDataBucketName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_DATA_PREFIX=$(jq -r '.[] | select(.OutputKey == "CostDataPrefix") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_QUERY_RESULTS_PREFIX=$(jq -r '.[] | select(.OutputKey == "CostQueryResultsPrefix") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_DATABASE=$(jq -r '.[] | select(.OutputKey == "CostDatabaseName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_TABLE=$(jq -r '.[] | select(.OutputKey == "CostTableName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+          COST_WORKGROUP=$(jq -r '.[] | select(.OutputKey == "CostWorkGroupName") | .OutputValue' <<<"$FOUNDATION_OUTPUTS")
+
+          aws cloudformation deploy \
+            --region us-east-1 \
+            --stack-name "$CUR_EXPORT_STACK_NAME" \
+            --template-file cloudformation/vms-portal-cur-export-template.yml \
+            --parameter-overrides \
+              CostDataBucketName="$COST_DATA_BUCKET" \
+              CostDataBucketRegion="$AWS_REGION" \
+            --no-fail-on-empty-changeset
+
+          SHUTDOWN_CODE_KEY="lambda/windows-vm-shutdown/${GITHUB_SHA}.zip"
+          zip -X -j /tmp/windows-vm-shutdown.zip \
+            lambda/windows_vm_shutdown/lambda_function.py
+          SHUTDOWN_CODE_VERSION=$(aws s3api put-object \
+            --bucket "$ARTIFACTS_BUCKET" \
+            --key "$SHUTDOWN_CODE_KEY" \
+            --body /tmp/windows-vm-shutdown.zip \
+            --query VersionId \
+            --output text)
+
           if ! aws ecr describe-repositories \
             --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
             aws ecr create-repository \
@@ -86,6 +133,15 @@ jobs:
               ExistingRoleName="$RUNTIME_ROLE_NAME" \
               AuthSecretArn="$SECRET_ARN" \
               LogRetentionDays=90 \
+              ShutdownCodeS3Bucket="$ARTIFACTS_BUCKET" \
+              ShutdownCodeS3Key="$SHUTDOWN_CODE_KEY" \
+              ShutdownCodeS3Version="$SHUTDOWN_CODE_VERSION" \
+              CostDataBucketName="$COST_DATA_BUCKET" \
+              CostDataPrefix="$COST_DATA_PREFIX" \
+              CostQueryResultsPrefix="$COST_QUERY_RESULTS_PREFIX" \
+              CostDatabaseName="$COST_DATABASE" \
+              CostTableName="$COST_TABLE" \
+              CostWorkGroupName="$COST_WORKGROUP" \
             --no-fail-on-empty-changeset
 
           STACK_OUTPUTS=$(aws cloudformation describe-stacks \
@@ -112,6 +168,10 @@ jobs:
 
           echo "host_ip=$HOST_IP" >> "$GITHUB_OUTPUT"
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "cost_data_bucket=$COST_DATA_BUCKET" >> "$GITHUB_OUTPUT"
+          echo "cost_database=$COST_DATABASE" >> "$GITHUB_OUTPUT"
+          echo "cost_table=$COST_TABLE" >> "$GITHUB_OUTPUT"
+          echo "cost_workgroup=$COST_WORKGROUP" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         run: |
           set -euo pipefail
@@ -132,11 +192,14 @@ jobs:
       - name: Deploy with Ansible
         env:
           HOST_IP: ${{ steps.prepare.outputs.host_ip }}
+          COST_DATABASE: ${{ steps.prepare.outputs.cost_database }}
+          COST_TABLE: ${{ steps.prepare.outputs.cost_table }}
+          COST_WORKGROUP: ${{ steps.prepare.outputs.cost_workgroup }}
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           set -euo pipefail
           printf '[portal]\n%s ansible_user=ubuntu\n' "$HOST_IP" > inventory
-          ansible-playbook -i inventory -e "deploy_tag=$IMAGE_TAG" -e "auth_secret_id=$AUTH_SECRET_ID" -e "deploy_domain=vms.coseeing.org" ansible_yaml/vms-portal-playbook.yml
+          ansible-playbook -i inventory -e "deploy_tag=$IMAGE_TAG" -e "auth_secret_id=$AUTH_SECRET_ID" -e "deploy_domain=vms.coseeing.org" -e "cost_database=$COST_DATABASE" -e "cost_table=$COST_TABLE" -e "cost_workgroup=$COST_WORKGROUP" ansible_yaml/vms-portal-playbook.yml
       - name: Verify portal health
         run: |
           set -euo pipefail

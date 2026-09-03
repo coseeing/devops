@@ -188,3 +188,36 @@ in **Secrets Manager** console under that prefix.
 
 No environment secrets are needed — the office/VPN CIDR was only needed once, to type into the
 security group's inbound rule in step 2.
+
+## 7. Launch or delete a VM batch
+
+Run **Manage Windows A11y EC2** from GitHub Actions after at least one
+`windows-a11y-*` AMI is available. For launch:
+
+- Enter only `stack_suffix`; `anson-test` resolves to the stack
+  `windows-a11y-anson-test`.
+- Choose `instance_count` from 1 through 20. The default is 1.
+- Keep or change the `m5.xlarge` instance type and 100 GiB root disk defaults.
+- The workflow automatically selects the newest available self-owned
+  `windows-a11y-*` AMI.
+
+The stack creates VM names `windows-a11y-anson-test-001` through the selected
+count. Every VM receives its stable private IPv4 address and a dynamic public
+IPv4 address from the selected public subnet. The successful Job Summary lists
+all VM names, Instance IDs, private IPs, and current public IPs.
+
+The public IPv4 address can change after a stop/start cycle; use the Portal or
+the latest EC2 details instead of treating it as a permanent connection value.
+The private IP remains attached to the primary network interface. The GitHub
+OIDC role only needs the existing EC2 and CloudFormation launch operations—EIP
+allocation permissions are not required. If any VM fails to provision,
+CloudFormation deletes the new batch instead of preserving a partial result.
+
+The pre-existing VM `i-021a0b068258c64d5` was created without a public IP. This
+template change does not rebuild it automatically; recreate that VM through the
+workflow when direct IPv4 Internet access is required.
+
+Deletion always targets the whole batch. Select `delete`, enter the same suffix,
+and type the complete generated stack name in `confirm_stack_name`. Deleting the
+stack terminates every VM in that batch; an individual VM cannot be deleted
+through this workflow.

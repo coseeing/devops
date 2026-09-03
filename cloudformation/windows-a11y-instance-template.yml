@@ -1,21 +1,47 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Windows A11y build/verification EC2 instance (ordinary shared-tenancy - Windows Server does not require a Dedicated Host)
+Description: Atomic batch of 1-20 Windows A11y EC2 instances with dynamic public IPs
 
 Parameters:
   AmiId:
     Type: AWS::EC2::Image::Id
-    Description: Windows AMI to launch (AWS public Traditional Chinese Windows Server 2025 base AMI for builds, or a windows-a11y-* AMI for verification)
+    Description: Latest available self-owned windows-a11y-* AMI selected by the workflow
+  InstanceCount:
+    Type: String
+    Default: "1"
+    AllowedValues:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "11"
+      - "12"
+      - "13"
+      - "14"
+      - "15"
+      - "16"
+      - "17"
+      - "18"
+      - "19"
+      - "20"
+    Description: Number of VMs to create
   InstanceType:
     Type: String
     Default: m5.xlarge
-    Description: EC2 instance type
+    Description: EC2 instance type shared by this batch
   DiskSize:
     Type: Number
     Default: 100
-    Description: Size of the root EBS volume in GB
+    MinValue: 1
+    Description: Size of each root EBS volume in GB
   SubnetId:
     Type: AWS::EC2::Subnet::Id
-    Description: Public subnet ID to launch the instance into
+    Description: Public subnet ID to launch the instances into
   SecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Description: RDP security group ID created manually per docs/windows-a11y-aws-manual-setup.md
@@ -25,13 +51,175 @@ Parameters:
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: EC2 KeyPair for emergency access
-  InstanceName:
-    Type: String
-    Description: Name tag for the instance
+Mappings:
+  InstanceCountToSlots:
+    "1":
+      Enabled: ["true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "2":
+      Enabled: ["true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "3":
+      Enabled: ["true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "4":
+      Enabled: ["true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "5":
+      Enabled: ["true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "6":
+      Enabled: ["true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "7":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "8":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "9":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "10":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "11":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "12":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false", "false"]
+    "13":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false", "false"]
+    "14":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false", "false"]
+    "15":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false", "false"]
+    "16":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false", "false"]
+    "17":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false", "false"]
+    "18":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false", "false"]
+    "19":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "false"]
+    "20":
+      Enabled: ["true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true", "true"]
+
+Conditions:
+  CreateSlot001:
+    Fn::Equals:
+      - Fn::Select:
+          - 0
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot002:
+    Fn::Equals:
+      - Fn::Select:
+          - 1
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot003:
+    Fn::Equals:
+      - Fn::Select:
+          - 2
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot004:
+    Fn::Equals:
+      - Fn::Select:
+          - 3
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot005:
+    Fn::Equals:
+      - Fn::Select:
+          - 4
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot006:
+    Fn::Equals:
+      - Fn::Select:
+          - 5
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot007:
+    Fn::Equals:
+      - Fn::Select:
+          - 6
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot008:
+    Fn::Equals:
+      - Fn::Select:
+          - 7
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot009:
+    Fn::Equals:
+      - Fn::Select:
+          - 8
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot010:
+    Fn::Equals:
+      - Fn::Select:
+          - 9
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot011:
+    Fn::Equals:
+      - Fn::Select:
+          - 10
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot012:
+    Fn::Equals:
+      - Fn::Select:
+          - 11
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot013:
+    Fn::Equals:
+      - Fn::Select:
+          - 12
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot014:
+    Fn::Equals:
+      - Fn::Select:
+          - 13
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot015:
+    Fn::Equals:
+      - Fn::Select:
+          - 14
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot016:
+    Fn::Equals:
+      - Fn::Select:
+          - 15
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot017:
+    Fn::Equals:
+      - Fn::Select:
+          - 16
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot018:
+    Fn::Equals:
+      - Fn::Select:
+          - 17
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot019:
+    Fn::Equals:
+      - Fn::Select:
+          - 18
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
+  CreateSlot020:
+    Fn::Equals:
+      - Fn::Select:
+          - 19
+          - Fn::FindInMap: [InstanceCountToSlots, !Ref InstanceCount, Enabled]
+      - "true"
 
 Resources:
-  WindowsInstance:
+  WindowsInstance001:
     Type: AWS::EC2::Instance
+    Condition: CreateSlot001
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref AmiId
@@ -50,15 +238,724 @@ Resources:
             VolumeType: gp3
       Tags:
         - Key: Name
-          Value: !Ref InstanceName
+          Value: !Sub "${AWS::StackName}-001"
         - Key: VmPortalManaged
           Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "001"
+  WindowsInstance002:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot002
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-002"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "002"
+  WindowsInstance003:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot003
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-003"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "003"
+  WindowsInstance004:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot004
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-004"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "004"
+  WindowsInstance005:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot005
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-005"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "005"
+  WindowsInstance006:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot006
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-006"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "006"
+  WindowsInstance007:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot007
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-007"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "007"
+  WindowsInstance008:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot008
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-008"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "008"
+  WindowsInstance009:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot009
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-009"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "009"
+  WindowsInstance010:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot010
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-010"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "010"
+  WindowsInstance011:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot011
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-011"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "011"
+  WindowsInstance012:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot012
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-012"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "012"
+  WindowsInstance013:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot013
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-013"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "013"
+  WindowsInstance014:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot014
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-014"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "014"
+  WindowsInstance015:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot015
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-015"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "015"
+  WindowsInstance016:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot016
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-016"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "016"
+  WindowsInstance017:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot017
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-017"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "017"
+  WindowsInstance018:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot018
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-018"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "018"
+  WindowsInstance019:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot019
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-019"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "019"
+  WindowsInstance020:
+    Type: AWS::EC2::Instance
+    Condition: CreateSlot020
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref DiskSize
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-020"
+        - Key: VmPortalManaged
+          Value: "true"
+        - Key: VmPortalStack
+          Value: !Ref "AWS::StackName"
+        - Key: VmPortalInstanceIndex
+          Value: "020"
 
 Outputs:
-  InstanceId:
-    Description: The Instance ID
-    Value: !Ref WindowsInstance
-
-  PublicIp:
-    Description: Public IP address of the instance
-    Value: !GetAtt WindowsInstance.PublicIp
+  InstanceId001:
+    Condition: CreateSlot001
+    Value: !Ref WindowsInstance001
+  PrivateIp001:
+    Condition: CreateSlot001
+    Value: !GetAtt WindowsInstance001.PrivateIp
+  PublicIp001:
+    Condition: CreateSlot001
+    Value: !GetAtt WindowsInstance001.PublicIp
+  InstanceId002:
+    Condition: CreateSlot002
+    Value: !Ref WindowsInstance002
+  PrivateIp002:
+    Condition: CreateSlot002
+    Value: !GetAtt WindowsInstance002.PrivateIp
+  PublicIp002:
+    Condition: CreateSlot002
+    Value: !GetAtt WindowsInstance002.PublicIp
+  InstanceId003:
+    Condition: CreateSlot003
+    Value: !Ref WindowsInstance003
+  PrivateIp003:
+    Condition: CreateSlot003
+    Value: !GetAtt WindowsInstance003.PrivateIp
+  PublicIp003:
+    Condition: CreateSlot003
+    Value: !GetAtt WindowsInstance003.PublicIp
+  InstanceId004:
+    Condition: CreateSlot004
+    Value: !Ref WindowsInstance004
+  PrivateIp004:
+    Condition: CreateSlot004
+    Value: !GetAtt WindowsInstance004.PrivateIp
+  PublicIp004:
+    Condition: CreateSlot004
+    Value: !GetAtt WindowsInstance004.PublicIp
+  InstanceId005:
+    Condition: CreateSlot005
+    Value: !Ref WindowsInstance005
+  PrivateIp005:
+    Condition: CreateSlot005
+    Value: !GetAtt WindowsInstance005.PrivateIp
+  PublicIp005:
+    Condition: CreateSlot005
+    Value: !GetAtt WindowsInstance005.PublicIp
+  InstanceId006:
+    Condition: CreateSlot006
+    Value: !Ref WindowsInstance006
+  PrivateIp006:
+    Condition: CreateSlot006
+    Value: !GetAtt WindowsInstance006.PrivateIp
+  PublicIp006:
+    Condition: CreateSlot006
+    Value: !GetAtt WindowsInstance006.PublicIp
+  InstanceId007:
+    Condition: CreateSlot007
+    Value: !Ref WindowsInstance007
+  PrivateIp007:
+    Condition: CreateSlot007
+    Value: !GetAtt WindowsInstance007.PrivateIp
+  PublicIp007:
+    Condition: CreateSlot007
+    Value: !GetAtt WindowsInstance007.PublicIp
+  InstanceId008:
+    Condition: CreateSlot008
+    Value: !Ref WindowsInstance008
+  PrivateIp008:
+    Condition: CreateSlot008
+    Value: !GetAtt WindowsInstance008.PrivateIp
+  PublicIp008:
+    Condition: CreateSlot008
+    Value: !GetAtt WindowsInstance008.PublicIp
+  InstanceId009:
+    Condition: CreateSlot009
+    Value: !Ref WindowsInstance009
+  PrivateIp009:
+    Condition: CreateSlot009
+    Value: !GetAtt WindowsInstance009.PrivateIp
+  PublicIp009:
+    Condition: CreateSlot009
+    Value: !GetAtt WindowsInstance009.PublicIp
+  InstanceId010:
+    Condition: CreateSlot010
+    Value: !Ref WindowsInstance010
+  PrivateIp010:
+    Condition: CreateSlot010
+    Value: !GetAtt WindowsInstance010.PrivateIp
+  PublicIp010:
+    Condition: CreateSlot010
+    Value: !GetAtt WindowsInstance010.PublicIp
+  InstanceId011:
+    Condition: CreateSlot011
+    Value: !Ref WindowsInstance011
+  PrivateIp011:
+    Condition: CreateSlot011
+    Value: !GetAtt WindowsInstance011.PrivateIp
+  PublicIp011:
+    Condition: CreateSlot011
+    Value: !GetAtt WindowsInstance011.PublicIp
+  InstanceId012:
+    Condition: CreateSlot012
+    Value: !Ref WindowsInstance012
+  PrivateIp012:
+    Condition: CreateSlot012
+    Value: !GetAtt WindowsInstance012.PrivateIp
+  PublicIp012:
+    Condition: CreateSlot012
+    Value: !GetAtt WindowsInstance012.PublicIp
+  InstanceId013:
+    Condition: CreateSlot013
+    Value: !Ref WindowsInstance013
+  PrivateIp013:
+    Condition: CreateSlot013
+    Value: !GetAtt WindowsInstance013.PrivateIp
+  PublicIp013:
+    Condition: CreateSlot013
+    Value: !GetAtt WindowsInstance013.PublicIp
+  InstanceId014:
+    Condition: CreateSlot014
+    Value: !Ref WindowsInstance014
+  PrivateIp014:
+    Condition: CreateSlot014
+    Value: !GetAtt WindowsInstance014.PrivateIp
+  PublicIp014:
+    Condition: CreateSlot014
+    Value: !GetAtt WindowsInstance014.PublicIp
+  InstanceId015:
+    Condition: CreateSlot015
+    Value: !Ref WindowsInstance015
+  PrivateIp015:
+    Condition: CreateSlot015
+    Value: !GetAtt WindowsInstance015.PrivateIp
+  PublicIp015:
+    Condition: CreateSlot015
+    Value: !GetAtt WindowsInstance015.PublicIp
+  InstanceId016:
+    Condition: CreateSlot016
+    Value: !Ref WindowsInstance016
+  PrivateIp016:
+    Condition: CreateSlot016
+    Value: !GetAtt WindowsInstance016.PrivateIp
+  PublicIp016:
+    Condition: CreateSlot016
+    Value: !GetAtt WindowsInstance016.PublicIp
+  InstanceId017:
+    Condition: CreateSlot017
+    Value: !Ref WindowsInstance017
+  PrivateIp017:
+    Condition: CreateSlot017
+    Value: !GetAtt WindowsInstance017.PrivateIp
+  PublicIp017:
+    Condition: CreateSlot017
+    Value: !GetAtt WindowsInstance017.PublicIp
+  InstanceId018:
+    Condition: CreateSlot018
+    Value: !Ref WindowsInstance018
+  PrivateIp018:
+    Condition: CreateSlot018
+    Value: !GetAtt WindowsInstance018.PrivateIp
+  PublicIp018:
+    Condition: CreateSlot018
+    Value: !GetAtt WindowsInstance018.PublicIp
+  InstanceId019:
+    Condition: CreateSlot019
+    Value: !Ref WindowsInstance019
+  PrivateIp019:
+    Condition: CreateSlot019
+    Value: !GetAtt WindowsInstance019.PrivateIp
+  PublicIp019:
+    Condition: CreateSlot019
+    Value: !GetAtt WindowsInstance019.PublicIp
+  InstanceId020:
+    Condition: CreateSlot020
+    Value: !Ref WindowsInstance020
+  PrivateIp020:
+    Condition: CreateSlot020
+    Value: !GetAtt WindowsInstance020.PrivateIp
+  PublicIp020:
+    Condition: CreateSlot020
+    Value: !GetAtt WindowsInstance020.PublicIp

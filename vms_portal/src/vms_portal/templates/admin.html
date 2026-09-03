@@ -1,1 +1,24 @@
-{% extends "base.html" %}{% block content %}<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>登出</button></form><h2>所有受管 VM</h2><table><thead><tr><th>名稱</th><th>Instance ID</th><th>Public IPv4</th><th>狀態</th><th>最近 14 天 EC2 運算成本</th><th>操作</th></tr></thead><tbody>{% for vm in vms %}<tr><td>{{ vm.name }}</td><td>{{ vm.instance_id }}</td><td>{{ vm.public_ip or '—' }}</td><td>{{ vm.state }}</td><td>{% if vm.instance_id in costs %}{{ costs[vm.instance_id].amount }} {{ costs[vm.instance_id].currency }}{% else %}成本資料尚未提供{% endif %}</td><td>{% if vm.state == 'running' %}<form method="post" action="/instances/{{ vm.instance_id }}/stop" data-confirm="停止 {{ vm.name }}？"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>停止 {{ vm.name }}</button></form>{% elif vm.state == 'stopped' %}<form method="post" action="/instances/{{ vm.instance_id }}/start"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>啟動 {{ vm.name }}</button></form>{% else %}狀態轉換中{% endif %}</td></tr>{% endfor %}</tbody></table>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>登出</button></form>
+<h2>所有受管 VM</h2>
+<table>
+  <thead><tr><th>名稱</th><th>Instance ID</th><th>指派給</th><th>Private IPv4</th><th>目前 Public IPv4</th><th>狀態</th><th>最近 60 天 EC2 成本</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for vm in vms %}
+    {% set cost = costs.get(vm.instance_id) %}
+    {% set assignment = assignments.get(vm.instance_id) %}
+    <tr>
+      <td>{{ vm.name }}</td>
+      <td>{{ vm.instance_id }}</td>
+      <td><form method="post" action="/instances/{{ vm.instance_id }}/assignment"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><label class="visually-hidden" for="assignee-{{ vm.instance_id }}">{{ vm.name }} 指派給</label><input id="assignee-{{ vm.instance_id }}" name="assignee" maxlength="200" value="{{ assignment.assignee if assignment else '' }}"><button>儲存</button></form></td>
+      <td>{{ vm.private_ip }}</td>
+      <td>{{ vm.public_ip or '—' }}</td>
+      <td>{{ vm.state }}</td>
+      <td>{% if cost and cost.status == 'ready' %}{{ cost.amount }} {{ cost.currency }}<br><small>可用期間：{{ cost.period_start }}～{{ cost.period_end }}</small>{% elif cost and cost.status == 'not_ready' %}成本報表尚未準備完成{% else %}成本查詢失敗{% endif %}</td>
+      <td>{% if vm.state == 'running' %}<form method="post" action="/instances/{{ vm.instance_id }}/stop" data-confirm="停止 {{ vm.name }}？"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>停止 {{ vm.name }}</button></form>{% elif vm.state == 'stopped' %}<form method="post" action="/instances/{{ vm.instance_id }}/start"><input type="hidden" name="csrf_token" value="{{ identity.csrf_token }}"><button>啟動 {{ vm.name }}</button></form>{% else %}狀態轉換中{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

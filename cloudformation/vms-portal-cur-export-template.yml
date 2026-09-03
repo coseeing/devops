@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: us-east-1 BCM Data Export for the Windows VM portal CUR 2.0 data
+
+Parameters:
+  CostDataBucketName:
+    Type: String
+  CostDataBucketRegion:
+    Type: String
+    Default: ap-northeast-1
+
+Resources:
+  PortalCurExport:
+    Type: AWS::BCMDataExports::Export
+    Properties:
+      Export:
+        Name: vms_portal_cur
+        Description: Minimal resource-level EC2 cost data for the Windows VM portal
+        DataQuery:
+          QueryStatement: >-
+            SELECT bill_billing_period_start_date,
+            line_item_resource_id,
+            line_item_usage_start_date,
+            line_item_line_item_type,
+            line_item_currency_code,
+            line_item_unblended_cost,
+            reservation_effective_cost,
+            savings_plan_savings_plan_effective_cost
+            FROM COST_AND_USAGE_REPORT
+          TableConfigurations:
+            COST_AND_USAGE_REPORT:
+              INCLUDE_RESOURCES: "TRUE"
+              INCLUDE_SPLIT_COST_ALLOCATION_DATA: "FALSE"
+              TIME_GRANULARITY: "DAILY"
+        DestinationConfigurations:
+          S3Destination:
+            S3Bucket: !Ref CostDataBucketName
+            S3BucketOwner: !Ref AWS::AccountId
+            S3Prefix: vms-portal-cur
+            S3Region: !Ref CostDataBucketRegion
+            S3OutputConfigurations:
+              Compression: PARQUET
+              Format: PARQUET
+              OutputType: CUSTOM
+              Overwrite: OVERWRITE_REPORT
+        RefreshCadence:
+          Frequency: SYNCHRONOUS
+
+Outputs:
+  ExportArn:
+    Value: !GetAtt PortalCurExport.ExportArn

@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-_DETAIL_KEYS = frozenset({"category", "error_code", "aws_request_id"})
+_DETAIL_KEYS = frozenset({"assignee", "category", "error_code", "aws_request_id"})
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,6 +17,10 @@ def test_defaults_are_safe_and_region_is_fixed() -> None:
     assert settings.managed_tag_value == "true"
     assert settings.session_cookie_name == "vms_portal_session"
     assert settings.cost_cache_seconds == 21_600
+    assert settings.cost_database == "vms_portal_costs"
+    assert settings.cost_table == "cur2"
+    assert settings.cost_workgroup == "vms-portal-costs"
+    assert str(settings.assignments_db_path) == "/data/vms-portal/data/portal.db"
     assert settings.trusted_proxy_ips == ("127.0.0.1", "::1")
 
 
@@ -39,3 +43,43 @@ def test_proxy_ips_are_trimmed_and_empty_entries_removed() -> None:
     )
 
     assert settings.trusted_proxy_ips == ("127.0.0.1", "172.18.0.2", "::1")
+
+
+def test_assignments_database_path_can_be_overridden() -> None:
+    settings = Settings.from_env(
+        {
+            "AUTH_SECRET_ID": "prod/vms-portal/auth",
+            "ASSIGNMENTS_DB_PATH": "/tmp/portal.db",
+        }
+    )
+
+    assert str(settings.assignments_db_path) == "/tmp/portal.db"
+
+
+def test_assignments_database_path_must_be_absolute() -> None:
+    with pytest.raises(ConfigurationError, match="ASSIGNMENTS_DB_PATH"):
+        Settings.from_env(
+            {
+                "AUTH_SECRET_ID": "prod/vms-portal/auth",
+                "ASSIGNMENTS_DB_PATH": "relative/portal.db",
+            }
+        )
+
+
+def test_cost_identifiers_can_be_overridden_and_must_be_safe() -> None:
+    settings = Settings.from_env(
+        {
+            "AUTH_SECRET_ID": "prod/vms-portal/auth",
+            "COST_DATABASE": "portal_costs_2",
+            "COST_TABLE": "cur_daily",
+            "COST_WORKGROUP": "portal-costs-2",
+        }
+    )
+    assert settings.cost_database == "portal_costs_2"
+    assert settings.cost_table == "cur_daily"
+    assert settings.cost_workgroup == "portal-costs-2"
+
+    with pytest.raises(ConfigurationError, match="COST_DATABASE"):
+        Settings.from_env(
+            {"AUTH_SECRET_ID": "prod/vms-portal/auth", "COST_DATABASE": "bad;drop"}
+        )
