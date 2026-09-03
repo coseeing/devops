@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -304,6 +305,56 @@ def test_deployment_is_non_root_read_only_and_uses_exact_domain() -> None:
     assert "owner: 10001" in playbook
     assert "- /data/vms-portal/data:/data/vms-portal/data" in playbook
     assert "vms.coseeing.org" in traefik
+
+
+def test_common_tasks_load_traefik_config_for_project_name(tmp_path: Path) -> None:
+    common_tasks = yaml.safe_load(
+        (ROOT / "ansible_yaml/common/pre-common.yml").read_text()
+    )
+    load_config = next(
+        task
+        for task in common_tasks
+        if task.get("name") == "Load Traefik source config"
+    )
+
+    extra_dir = tmp_path / "extra"
+    extra_dir.mkdir()
+    (extra_dir / "vms-portal.yml").write_text(
+        (ROOT / "ansible_yaml/extra/vms-portal.yml").read_text()
+    )
+    playbook = [
+        {
+            "name": "Resolve project-specific Traefik config",
+            "hosts": "localhost",
+            "gather_facts": False,
+            "vars": {"project_name": "vms-portal"},
+            "tasks": [
+                load_config,
+                {
+                    "name": "Verify the project config was loaded",
+                    "ansible.builtin.assert": {
+                        "that": "traefik_source_config.http.routers.https.rule == 'Host(`vms.coseeing.org`)'"
+                    },
+                },
+            ],
+        }
+    ]
+    playbook_path = tmp_path / "playbook.yml"
+    playbook_path.write_text(yaml.safe_dump(playbook, sort_keys=False))
+
+    result = subprocess.run(
+        [
+            "ansible-playbook",
+            "--connection=local",
+            "--inventory=localhost,",
+            str(playbook_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_deploy_workflow_requires_exact_domain_confirmation() -> None:
