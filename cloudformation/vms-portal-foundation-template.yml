@@ -57,7 +57,7 @@ Resources:
             Principal:
               Service: bcm-data-exports.amazonaws.com
             Action: s3:PutObject
-            Resource: !Sub ${CostDataBucket.Arn}/vms-portal-cur/*
+            Resource: !Sub ${CostDataBucket.Arn}/*
             Condition:
               ArnLike:
                 aws:SourceArn: !Sub arn:${AWS::Partition}:bcm-data-exports:us-east-1:${AWS::AccountId}:export/*

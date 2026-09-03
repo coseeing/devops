@@ -208,6 +208,16 @@ def test_foundation_defines_cur2_parquet_glue_projection_and_athena_limits() -> 
     assert bucket["BucketEncryption"]
     assert all(bucket["PublicAccessBlockConfiguration"].values())
 
+    bucket_policy = resources["CostDataBucketPolicy"]["Properties"]["PolicyDocument"][
+        "Statement"
+    ]
+    data_exports_delivery = next(
+        statement
+        for statement in bucket_policy
+        if statement["Sid"] == "EnableAWSDataExportsToWriteToS3"
+    )
+    assert data_exports_delivery["Resource"] == "${CostDataBucket.Arn}/*"
+
     assert "PortalCurExport" not in resources
     export_path = ROOT / "cloudformation/vms-portal-cur-export-template.yml"
     assert export_path.exists()
