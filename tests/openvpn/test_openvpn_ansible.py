@@ -98,8 +98,6 @@ def test_role_installs_scoped_firewall_before_openvpn_without_regressing_rollbac
     assert "course-firewall.nft.j2" in tasks
     assert "dest: /etc/openvpn/course-firewall.nft.staged" in tasks
     assert "argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]" in tasks
-    assert "dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf" in tasks
-    assert 'content: "net.ipv4.ip_forward=1\\n"' in tasks
     assert "Reload course firewall" in handlers
     assert "flush ruleset" not in combined
     assert "iptables" not in combined
@@ -130,6 +128,40 @@ def test_activation_rollback_restores_captured_service_state() -> None:
     assert "Stop course firewall after rollback" in rescue_names
 
 
+def test_ip_forward_changes_are_rolled_back_with_activation() -> None:
+    tasks = load_role_tasks()
+    names = [str(task.get("name")) for task in tasks]
+    activation_index = names.index("Activate OpenVPN artifacts transactionally")
+    assert names.index("Capture prior IP forwarding runtime value") < activation_index
+    assert names.index("Check prior IP forwarding sysctl file") < activation_index
+    assert names.index("Read prior IP forwarding sysctl file") < activation_index
+    assert "Persist OpenVPN course IP forwarding" not in names
+    assert "Apply OpenVPN course IP forwarding" not in names
+
+    activation = named_task(tasks, "Activate OpenVPN artifacts transactionally")
+    activation_names = [str(task.get("name")) for task in activation["block"]]
+    persist_index = activation_names.index("Persist OpenVPN course IP forwarding")
+    apply_index = activation_names.index("Apply OpenVPN course IP forwarding")
+    firewall_start_index = activation_names.index("Enable and start course firewall")
+    assert persist_index < apply_index < firewall_start_index
+
+    rescue_names = [str(task.get("name")) for task in activation["rescue"]]
+    assert "Restore previous IP forwarding sysctl file" in rescue_names
+    assert "Remove IP forwarding sysctl file created by failed deploy" in rescue_names
+    assert "Restore prior IP forwarding runtime value" in rescue_names
+
+    tasks_text = (ROLE / "tasks/main.yml").read_text()
+    assert "openvpn_prior_ip_forward_value" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat" in tasks_text
+    assert "openvpn_prior_ip_forward_file_content.content | b64decode" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat.stat.uid" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat.stat.gid" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat.stat.mode" in tasks_text
+    assert "net.ipv4.ip_forward={{ openvpn_prior_ip_forward_value.stdout | trim }}" in tasks_text
+    assert "sysctl, --system" not in tasks_text
+    assert "net.ipv6" not in tasks_text
+
+
 def test_firewall_allows_only_rdp_to_windows_and_drops_other_vpn_traffic() -> None:
     rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
     assert "table inet openvpn_course" in rules
@@ -137,13 +169,28 @@ def test_firewall_allows_only_rdp_to_windows_and_drops_other_vpn_traffic() -> No
     assert "type filter hook input priority filter; policy accept;" in rules
     assert "type filter hook forward priority filter; policy accept;" in rules
     assert "type nat hook postrouting priority srcnat; policy accept;" in rules
-    assert 'iifname "tun-course" ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept' in rules
+    assert 'iifname "tun-course" ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept' in rules
+    assert 'iifname "tun-course" ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept' not in rules
     assert 'iifname "tun-course" drop' in rules
     assert 'oifname "tun-course" ct state established,related accept' in rules
+    assert 'oifname "tun-course" drop' in rules
     assert 'ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 masquerade' in rules
     assert "flush ruleset" not in rules
     assert "0.0.0.0/0" not in rules
     assert "openvpn_vpc_cidr" not in rules
+
+
+def test_firewall_drops_new_return_path_traffic_before_vpn_ingress_rules() -> None:
+    rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
+    established = rules.index('oifname "tun-course" ct state established,related accept')
+    return_drop = rules.index('oifname "tun-course" drop')
+    exact_allow = rules.index(
+        'iifname "tun-course" ip saddr {{ openvpn_vpn_cidr }} '
+        'ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept'
+    )
+    vpn_ingress_drop = rules.rindex('iifname "tun-course" drop')
+
+    assert established < return_drop < exact_allow < vpn_ingress_drop
 
 
 def test_firewall_unit_is_required_scoped_and_starts_before_openvpn() -> None:

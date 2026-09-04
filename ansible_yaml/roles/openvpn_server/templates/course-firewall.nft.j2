@@ -7,7 +7,8 @@ table inet openvpn_course {
   chain forward {
     type filter hook forward priority filter; policy accept;
     oifname "tun-course" ct state established,related accept
-    iifname "tun-course" ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept
+    oifname "tun-course" drop
+    iifname "tun-course" ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept
     iifname "tun-course" drop
   }
 }

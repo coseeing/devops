@@ -343,19 +343,6 @@
     mode: "0644"
   notify: Reload course firewall
 
-- name: Persist OpenVPN course IP forwarding
-  ansible.builtin.copy:
-    dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
-    content: "net.ipv4.ip_forward=1\n"
-    owner: root
-    group: root
-    mode: "0644"
-
-- name: Apply OpenVPN course IP forwarding
-  ansible.builtin.command:
-    argv: [sysctl, -w, net.ipv4.ip_forward=1]
-  changed_when: false
-
 - name: Render staged OpenVPN server configuration
   ansible.builtin.template:
     src: course.conf.j2
@@ -516,6 +503,31 @@
   changed_when: false
   failed_when: false
 
+- name: Capture prior IP forwarding runtime value
+  ansible.builtin.command:
+    argv: [sysctl, -n, net.ipv4.ip_forward]
+  register: openvpn_prior_ip_forward_value
+  changed_when: false
+  failed_when: false
+
+- name: Check prior IP forwarding sysctl file
+  ansible.builtin.stat:
+    path: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+    follow: false
+  register: openvpn_prior_ip_forward_file_stat
+
+- name: Refuse symlinked IP forwarding sysctl file
+  ansible.builtin.assert:
+    that:
+      - not openvpn_prior_ip_forward_file_stat.stat.islnk
+  when: openvpn_prior_ip_forward_file_stat.stat.exists
+
+- name: Read prior IP forwarding sysctl file
+  ansible.builtin.slurp:
+    src: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+  register: openvpn_prior_ip_forward_file_content
+  when: openvpn_prior_ip_forward_file_stat.stat.exists
+
 - name: Resolve previous active OpenVPN file presence
   ansible.builtin.set_fact:
     openvpn_had_previous_active_files: >-
@@ -577,6 +589,19 @@
     - name: Validate staged course firewall rules
       ansible.builtin.command:
         argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]
+      changed_when: false
+
+    - name: Persist OpenVPN course IP forwarding
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        content: "net.ipv4.ip_forward=1\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Apply OpenVPN course IP forwarding
+      ansible.builtin.command:
+        argv: [sysctl, -w, net.ipv4.ip_forward=1]
       changed_when: false
 
     - name: Install validated active OpenVPN files
@@ -652,6 +677,35 @@
       loop: "{{ openvpn_active_file_stats.results }}"
       when: not item.stat.exists
       no_log: "{{ item.item.secret }}"
+
+    - name: Restore previous IP forwarding sysctl file
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        content: "{{ openvpn_prior_ip_forward_file_content.content | b64decode }}"
+        owner: "{{ openvpn_prior_ip_forward_file_stat.stat.uid }}"
+        group: "{{ openvpn_prior_ip_forward_file_stat.stat.gid }}"
+        mode: "{{ openvpn_prior_ip_forward_file_stat.stat.mode }}"
+      failed_when: false
+      when: openvpn_prior_ip_forward_file_stat.stat.exists
+
+    - name: Remove IP forwarding sysctl file created by failed deploy
+      ansible.builtin.file:
+        path: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        state: absent
+      failed_when: false
+      when: not openvpn_prior_ip_forward_file_stat.stat.exists
+
+    - name: Restore prior IP forwarding runtime value
+      ansible.builtin.command:
+        argv:
+          - sysctl
+          - -w
+          - "net.ipv4.ip_forward={{ openvpn_prior_ip_forward_value.stdout | trim }}"
+      changed_when: false
+      failed_when: false
+      when:
+        - openvpn_prior_ip_forward_value.rc == 0
+        - openvpn_prior_ip_forward_value.stdout | trim in ['0', '1']
 
     - name: Restore prior OpenVPN enabled state
       ansible.builtin.systemd_service:
