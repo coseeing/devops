@@ -91,6 +91,40 @@ def create_staging_file(directory_fd):
     raise ExportError("could not create export temporary file")
 
 
+def open_directory_component(parent_fd, component, directory_flags):
+    try:
+        component_stat = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError as error:
+        raise ExportError("destination directory does not exist") from error
+    if stat.S_ISLNK(component_stat.st_mode):
+        raise ExportError("destination directory must not contain symlinks")
+    if not stat.S_ISDIR(component_stat.st_mode):
+        raise ExportError("destination directory component is not a directory")
+    return os.open(component, directory_flags, dir_fd=parent_fd)
+
+
+def open_destination_directory(directory):
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    if os.path.isabs(directory):
+        directory_fd = os.open(os.sep, directory_flags)
+    else:
+        directory_fd = os.open(".", directory_flags)
+
+    try:
+        for component in directory.split(os.sep):
+            if component in ("", "."):
+                continue
+            if component == "..":
+                raise ExportError("destination directory must not contain '..'")
+            next_fd = open_directory_component(directory_fd, component, directory_flags)
+            close_fd(directory_fd)
+            directory_fd = next_fd
+    except Exception:
+        close_fd(directory_fd)
+        raise
+    return directory_fd
+
+
 def publish(directory_fd, staging_name, destination_name, force):
     try:
         destination_stat = os.stat(destination_name, dir_fd=directory_fd, follow_symlinks=False)
@@ -132,8 +166,9 @@ def main():
         if not stat.S_ISREG(os.fstat(source_fd).st_mode):
             raise ExportError("profile must be a regular file")
 
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-        directory_fd = os.open(directory, directory_flags)
+        if destination_name in (".", ".."):
+            raise ExportError("destination must name a regular file")
+        directory_fd = open_destination_directory(directory)
         staging_name, staging_fd = create_staging_file(directory_fd)
         staging_stat = os.fstat(staging_fd)
         if not stat.S_ISREG(staging_stat.st_mode):

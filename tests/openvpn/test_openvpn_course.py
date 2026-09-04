@@ -155,6 +155,50 @@ def test_export_rejects_a_symlinked_profile(course_env, tmp_path) -> None:
     assert not list(tmp_path.glob(".openvpn-course.*"))
 
 
+@pytest.mark.parametrize("path_kind", ["absolute", "relative"])
+def test_export_rejects_an_intermediate_symlinked_destination_directory(
+    course_env, tmp_path, path_kind
+) -> None:
+    redirected_root = tmp_path / "redirected"
+    redirected_nested = redirected_root / "nested"
+    redirected_nested.mkdir(parents=True)
+    link_root = tmp_path / "link-root"
+    link_root.symlink_to(redirected_root)
+
+    if path_kind == "absolute":
+        destination = link_root / "nested" / "course.ovpn"
+        cwd = None
+    else:
+        destination = Path("link-root") / "nested" / "course.ovpn"
+        cwd = tmp_path
+
+    result = run_course(course_env, "export", str(destination), cwd=cwd)
+
+    assert result.returncode != 0
+    assert "destination directory must not contain symlinks" in result.stderr
+    assert not (redirected_nested / "course.ovpn").exists()
+    assert not list(redirected_nested.glob(".openvpn-course.*"))
+
+
+def test_export_rejects_parent_directory_destination_components(
+    course_env, tmp_path
+) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+
+    result = run_course(
+        course_env,
+        "export",
+        str(Path("nested") / ".." / "course.ovpn"),
+        cwd=tmp_path,
+    )
+
+    assert result.returncode != 0
+    assert "destination directory must not contain '..'" in result.stderr
+    assert not (tmp_path / "course.ovpn").exists()
+    assert not list(tmp_path.glob(".openvpn-course.*"))
+
+
 def test_logs_delegates_to_course_systemd_unit(course_env, tmp_path) -> None:
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
