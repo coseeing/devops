@@ -73,6 +73,9 @@ def mock_commands(tmp_path: Path, course_env: dict[str, str]) -> Path:
             "if [[ $(basename \"$0\") == systemctl && ${MOCK_SYSTEMCTL_FAIL_RELOAD:-} == 1 && $* == *'reload openvpn-server@course'* ]]; then\n"
             "  exit 42\n"
             "fi\n"
+            "if [[ $(basename \"$0\") == openssl && ${MOCK_OPENSSL_FAIL_VERIFY:-} == 1 && ${1:-} == verify ]]; then\n"
+            "  exit 44\n"
+            "fi\n"
             "if [[ $(basename \"$0\") == aws && $* == *'s3 presign'* ]]; then\n"
             "  printf 'https://example.invalid/profile?signature=test\\n'\n"
             "elif [[ $(basename \"$0\") == openssl && ${1:-} == rand ]]; then\n"
@@ -108,11 +111,35 @@ def mock_commands(tmp_path: Path, course_env: dict[str, str]) -> Path:
     renderer = pki / "render-profile"
     renderer.write_text(
         "#!/bin/sh\n"
+        "if [ \"${MOCK_RENDER_PROFILE_WITHOUT_TLS_CRYPT:-}\" = 1 ]; then\n"
+        "  printf 'client\\n<ca>ca</ca>\\n<cert>cert</cert>\\n<key>key</key>\\n'\n"
+        "  exit 0\n"
+        "fi\n"
         "printf 'client\\n<ca>ca</ca>\\n<cert>cert</cert>\\n<key>key</key>\\n<tls-crypt>tls</tls-crypt>\\n'\n"
     )
     renderer.chmod(0o755)
     course_env["PATH"] = f"{mock_bin}:{course_env['PATH']}"
     return call_log
+
+
+def rotation_state(env: dict[str, str]) -> dict[str, object]:
+    pki = configured_path(env, "PKI_DIR")
+    return {
+        "index": (pki / "pki/index.txt").read_text(),
+        "crlnumber": (pki / "pki/crlnumber").read_text(),
+        "pki_crl": (pki / "pki/crl.pem").read_text(),
+        "profile": configured_path(env, "PROFILE_PATH").read_text(),
+        "active_cn": configured_path(env, "ACTIVE_CLIENT_CN_FILE").read_text(),
+        "server_crl": configured_path(env, "SERVER_CRL_PATH").read_text(),
+        "issued": {
+            path.name: path.read_text()
+            for path in sorted((pki / "pki/issued").iterdir())
+        },
+        "private": {
+            path.name: path.read_text()
+            for path in sorted((pki / "pki/private").iterdir())
+        },
+    }
 
 
 def test_status_reports_metadata_without_profile_secret(course_env) -> None:
@@ -365,6 +392,51 @@ def test_rotate_rolls_back_after_post_revoke_failure(
     assert "revoked course-shared" not in (pki / "pki/index.txt").read_text()
     calls = mock_commands.read_text().splitlines()
     assert sum("reload openvpn-server@course" in line for line in calls) == 2
+
+
+def test_rotate_rolls_back_build_artifacts_when_verify_fails(
+    course_env, mock_commands
+) -> None:
+    before = rotation_state(course_env)
+
+    result = run_course(
+        {**course_env, "MOCK_OPENSSL_FAIL_VERIFY": "1"},
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode != 0
+    assert rotation_state(course_env) == before
+    calls = mock_commands.read_text().splitlines()
+    assert any("build-client-full" in line for line in calls)
+    assert any("verify" in line for line in calls)
+    assert not any("revoke course-shared" in line for line in calls)
+    assert not any("reload openvpn-server@course" in line for line in calls)
+
+
+def test_rotate_rolls_back_build_artifacts_when_profile_validation_fails(
+    course_env, mock_commands
+) -> None:
+    before = rotation_state(course_env)
+
+    result = run_course(
+        {**course_env, "MOCK_RENDER_PROFILE_WITHOUT_TLS_CRYPT": "1"},
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode != 0
+    assert "rendered profile is missing <tls-crypt>" in result.stderr
+    assert rotation_state(course_env) == before
+    calls = mock_commands.read_text().splitlines()
+    assert any("build-client-full" in line for line in calls)
+    assert any("verify" in line for line in calls)
+    assert not any("revoke course-shared" in line for line in calls)
+    assert not any("reload openvpn-server@course" in line for line in calls)
 
 
 @pytest.mark.parametrize("args", [("extra",), ("--expires-in", "600")])

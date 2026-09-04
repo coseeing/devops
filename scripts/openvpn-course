@@ -6,6 +6,7 @@ readonly PRODUCTION_ENV_FILE=/etc/openvpn/openvpn-course.env
 ENV_FILE=${OPENVPN_COURSE_ENV_FILE:-$PRODUCTION_ENV_FILE}
 ROTATION_WORK=
 ROTATION_BACKUP=
+ROTATION_RELOAD_ON_ROLLBACK=0
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -127,7 +128,10 @@ cleanup_rotation() {
 validate_rendered_profile() {
   local profile=$1 block
   for block in '<ca>' '<cert>' '<key>' '<tls-crypt>'; do
-    grep -Fq "$block" "$profile" || die "rendered profile is missing $block"
+    if ! grep -Fq "$block" "$profile"; then
+      printf 'error: rendered profile is missing %s\n' "$block" >&2
+      return 1
+    fi
   done
 }
 
@@ -135,6 +139,109 @@ utc_after_seconds() {
   local seconds=$1
   date -u -d "+$seconds seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || \
     date -u -v+"${seconds}"S '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+backup_pki_file() {
+  local name=$1 source=$PKI_DIR/pki/$name target=$ROTATION_BACKUP/pki-files/$name
+  if [[ -e "$source" || -L "$source" ]]; then
+    cp -p "$source" "$target"
+  fi
+}
+
+backup_pki_directory() {
+  local name=$1 source=$PKI_DIR/pki/$name target=$ROTATION_BACKUP/pki-dirs/$name
+  if [[ -e "$source" || -L "$source" ]]; then
+    [[ -d "$source" && ! -L "$source" ]] || die "PKI $name path must be a directory"
+    mkdir -p "$target" "$ROTATION_BACKUP/pki-dir-markers"
+    cp -pR "$source/." "$target/"
+    : >"$ROTATION_BACKUP/pki-dir-markers/$name"
+  fi
+}
+
+backup_rotation_state() {
+  local name
+  mkdir -p "$ROTATION_BACKUP/pki-files" "$ROTATION_BACKUP/pki-dirs"
+  for name in \
+    index.txt index.txt.attr index.txt.attr.old index.txt.old \
+    serial serial.old crlnumber crlnumber.old crl.pem; do
+    backup_pki_file "$name"
+  done
+  for name in issued private reqs certs_by_serial revoked renewed inline; do
+    backup_pki_directory "$name"
+  done
+  cp -p "$PROFILE_PATH" "$ROTATION_BACKUP/profile.ovpn"
+  cp -p "$ACTIVE_CLIENT_CN_FILE" "$ROTATION_BACKUP/active-client-cn"
+  cp -p "$SERVER_CRL_PATH" "$ROTATION_BACKUP/server-crl.pem"
+}
+
+restore_pki_file() {
+  local name=$1 source=$ROTATION_BACKUP/pki-files/$name target=$PKI_DIR/pki/$name
+  if [[ -e "$source" || -L "$source" ]]; then
+    publish_copy_atomically "$source" "$target"
+  elif [[ -e "$target" || -L "$target" ]]; then
+    rm -f -- "$target"
+  fi
+}
+
+restore_pki_directory() {
+  local name=$1
+  local source=$ROTATION_BACKUP/pki-dirs/$name
+  local marker=$ROTATION_BACKUP/pki-dir-markers/$name
+  local target=$PKI_DIR/pki/$name
+  local current rel
+
+  if [[ -e "$marker" ]]; then
+    [[ -d "$target" && ! -L "$target" ]] || return 1
+    while IFS= read -r -d '' current; do
+      rel=${current#"$target"/}
+      if [[ ! -e "$source/$rel" && ! -L "$source/$rel" ]]; then
+        rm -f -- "$current" || return 1
+      fi
+    done < <(find "$target" -mindepth 1 ! -type d -print0)
+    while IFS= read -r -d '' current; do
+      rel=${current#"$target"/}
+      if [[ ! -d "$source/$rel" ]]; then
+        rmdir "$current" 2>/dev/null || true
+      fi
+    done < <(find "$target" -depth -mindepth 1 -type d -print0)
+    cp -pR "$source/." "$target/"
+  elif [[ -e "$target" || -L "$target" ]]; then
+    [[ -d "$target" && ! -L "$target" ]] || return 1
+    find "$target" -mindepth 1 ! -type d -exec rm -f -- {} + || return 1
+    find "$target" -depth -mindepth 1 -type d -exec rmdir {} + 2>/dev/null || true
+    rmdir "$target"
+  fi
+}
+
+restore_rotation_state() {
+  local name restore_failed=0
+  for name in \
+    index.txt index.txt.attr index.txt.attr.old index.txt.old \
+    serial serial.old crlnumber crlnumber.old crl.pem; do
+    restore_pki_file "$name" || restore_failed=1
+  done
+  for name in issued private reqs certs_by_serial revoked renewed inline; do
+    restore_pki_directory "$name" || restore_failed=1
+  done
+  publish_file_atomically "$ROTATION_BACKUP/profile.ovpn" "$PROFILE_PATH" 0600 || restore_failed=1
+  publish_file_atomically "$ROTATION_BACKUP/active-client-cn" "$ACTIVE_CLIENT_CN_FILE" 0600 || restore_failed=1
+  publish_file_atomically "$ROTATION_BACKUP/server-crl.pem" "$SERVER_CRL_PATH" 0644 || restore_failed=1
+  return "$restore_failed"
+}
+
+rollback_rotation() {
+  local status=$?
+  local restore_failed=0
+  trap - ERR
+  printf 'error: rotation failed; restoring previous profile state\n' >&2
+  restore_rotation_state || restore_failed=1
+  if (( ROTATION_RELOAD_ON_ROLLBACK )); then
+    systemctl reload openvpn-server@course || true
+  fi
+  if (( restore_failed )); then
+    printf 'warning: rollback encountered one or more restore failures\n' >&2
+  fi
+  return "$status"
 }
 
 publish_export() {
@@ -361,37 +468,15 @@ rotate_command() {
   ROTATION_WORK=$(mktemp -d "$PKI_DIR/rotate.XXXXXX")
   trap cleanup_rotation EXIT
   ROTATION_BACKUP=$(mktemp -d "$PKI_DIR/rollback.XXXXXX")
+  backup_rotation_state
+  trap rollback_rotation ERR
 
   (cd "$PKI_DIR" && EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE="$days" ./easyrsa build-client-full "$new_cn" nopass)
   openssl verify -CAfile "$PKI_DIR/pki/ca.crt" "$PKI_DIR/pki/issued/$new_cn.crt"
   "$PKI_DIR/render-profile" "$new_cn" >"$ROTATION_WORK/current.ovpn"
   validate_rendered_profile "$ROTATION_WORK/current.ovpn"
 
-  cp -p "$PKI_DIR/pki/index.txt" "$ROTATION_BACKUP/index.txt"
-  cp -p "$PKI_DIR/pki/crlnumber" "$ROTATION_BACKUP/crlnumber"
-  cp -p "$PKI_DIR/pki/crl.pem" "$ROTATION_BACKUP/pki-crl.pem"
-  cp -p "$PROFILE_PATH" "$ROTATION_BACKUP/profile.ovpn"
-  cp -p "$ACTIVE_CLIENT_CN_FILE" "$ROTATION_BACKUP/active-client-cn"
-  cp -p "$SERVER_CRL_PATH" "$ROTATION_BACKUP/server-crl.pem"
-
-  rollback_rotation() {
-    local status=$? restore_failed=0
-    trap - ERR
-    printf 'error: rotation failed after revocation; restoring previous profile state\n' >&2
-    publish_copy_atomically "$ROTATION_BACKUP/index.txt" "$PKI_DIR/pki/index.txt" || restore_failed=1
-    publish_copy_atomically "$ROTATION_BACKUP/crlnumber" "$PKI_DIR/pki/crlnumber" || restore_failed=1
-    publish_copy_atomically "$ROTATION_BACKUP/pki-crl.pem" "$PKI_DIR/pki/crl.pem" || restore_failed=1
-    publish_file_atomically "$ROTATION_BACKUP/profile.ovpn" "$PROFILE_PATH" 0600 || restore_failed=1
-    publish_file_atomically "$ROTATION_BACKUP/active-client-cn" "$ACTIVE_CLIENT_CN_FILE" 0600 || restore_failed=1
-    publish_file_atomically "$ROTATION_BACKUP/server-crl.pem" "$SERVER_CRL_PATH" 0644 || restore_failed=1
-    systemctl reload openvpn-server@course || true
-    if (( restore_failed )); then
-      printf 'warning: rollback encountered one or more restore failures\n' >&2
-    fi
-    return "$status"
-  }
-
-  trap rollback_rotation ERR
+  ROTATION_RELOAD_ON_ROLLBACK=1
   (cd "$PKI_DIR" && EASYRSA_BATCH=1 ./easyrsa revoke "$old_cn" && EASYRSA_BATCH=1 ./easyrsa gen-crl)
   publish_file_atomically "$ROTATION_WORK/current.ovpn" "$PROFILE_PATH" 0600
   publish_text_atomically "$new_cn" "$ACTIVE_CLIENT_CN_FILE" 0600
@@ -400,6 +485,7 @@ rotate_command() {
   trap - ERR
   trap - EXIT
   cleanup_rotation
+  ROTATION_RELOAD_ON_ROLLBACK=0
   printf 'Rotated course shared profile to %s\n' "$new_cn"
 }
 
