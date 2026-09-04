@@ -94,7 +94,7 @@ def test_export_rejects_non_regular_destinations_even_with_force(
 
 @pytest.mark.parametrize(
     "args",
-    [(), ("--force",), ("course.ovpn", "--invalid"), ("course.ovpn", "--force", "extra")],
+    [(), ("",), ("--force",), ("course.ovpn", "--invalid"), ("course.ovpn", "--force", "extra")],
 )
 def test_export_rejects_invalid_argument_shapes(course_env, tmp_path, args) -> None:
     result = run_course(course_env, "export", *args, cwd=tmp_path)
@@ -110,6 +110,66 @@ def test_export_handles_a_leading_dash_destination_safely(course_env, tmp_path) 
     assert result.returncode == 0
     assert destination.read_text() == "client\n<key>secret</key>\n"
     assert destination.stat().st_mode & 0o777 == 0o600
+
+
+def test_export_chowns_a_temporary_file_before_publication(course_env, tmp_path) -> None:
+    destination = tmp_path / "course.ovpn"
+    destination.write_text("old profile")
+    mock_bin = tmp_path / "bin"
+    mock_bin.mkdir()
+    chown_log = tmp_path / "chown.log"
+    chown = mock_bin / "chown"
+    chown.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CHOWN_LOG\"\n")
+    chown.chmod(0o755)
+    env = {
+        **course_env,
+        "PATH": f"{mock_bin}:{course_env['PATH']}",
+        "SUDO_UID": "123",
+        "SUDO_GID": "456",
+        "CHOWN_LOG": str(chown_log),
+    }
+
+    result = run_course(env, "export", str(destination), "--force")
+
+    chown_arguments = chown_log.read_text().splitlines()
+    assert result.returncode == 0
+    assert chown_arguments[:2] == ["123:456", "--"]
+    assert chown_arguments[-1] != str(destination)
+    assert Path(chown_arguments[-1]).name.startswith(".openvpn-course.")
+    assert destination.read_text() == "client\n<key>secret</key>\n"
+
+
+def test_export_does_not_follow_a_destination_substituted_before_publication(
+    course_env, tmp_path
+) -> None:
+    destination = tmp_path / "course.ovpn"
+    destination.write_text("old profile")
+    protected_target = tmp_path / "protected.ovpn"
+    protected_target.write_text("protected profile")
+    mock_bin = tmp_path / "bin"
+    mock_bin.mkdir()
+    chown = mock_bin / "chown"
+    chown.write_text(
+        "#!/bin/sh\n"
+        "rm -f -- \"$DESTINATION\"\n"
+        "ln -s \"$PROTECTED_TARGET\" \"$DESTINATION\"\n"
+    )
+    chown.chmod(0o755)
+    env = {
+        **course_env,
+        "PATH": f"{mock_bin}:{course_env['PATH']}",
+        "SUDO_UID": "123",
+        "SUDO_GID": "456",
+        "DESTINATION": str(destination),
+        "PROTECTED_TARGET": str(protected_target),
+    }
+
+    result = run_course(env, "export", str(destination), "--force")
+
+    assert result.returncode != 0
+    assert destination.is_symlink()
+    assert protected_target.read_text() == "protected profile"
+    assert not list(tmp_path.glob(".openvpn-course.*"))
 
 
 def test_logs_delegates_to_course_systemd_unit(course_env, tmp_path) -> None:
