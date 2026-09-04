@@ -28,7 +28,9 @@ def course_env(tmp_path: Path) -> dict[str, str]:
     return {"OPENVPN_COURSE_ENV_FILE": str(env_file), "PATH": os.environ["PATH"]}
 
 
-def run_course(env: dict[str, str], *args: str, input_text: str = ""):
+def run_course(
+    env: dict[str, str], *args: str, input_text: str = "", cwd: Path | None = None
+):
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         env=env,
@@ -36,6 +38,7 @@ def run_course(env: dict[str, str], *args: str, input_text: str = ""):
         text=True,
         capture_output=True,
         check=False,
+        cwd=cwd,
     )
 
 
@@ -56,6 +59,57 @@ def test_export_writes_mode_0600_and_refuses_overwrite(course_env, tmp_path) -> 
     second = run_course(course_env, "export", str(destination))
     assert second.returncode != 0
     assert "already exists" in second.stderr
+
+
+def test_export_force_replaces_an_existing_regular_file(course_env, tmp_path) -> None:
+    destination = tmp_path / "course.ovpn"
+    destination.write_text("old profile")
+
+    result = run_course(course_env, "export", str(destination), "--force")
+
+    assert result.returncode == 0
+    assert destination.read_text() == "client\n<key>secret</key>\n"
+    assert destination.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink", "dangling_symlink"])
+def test_export_rejects_non_regular_destinations_even_with_force(
+    course_env, tmp_path, kind
+) -> None:
+    destination = tmp_path / "course.ovpn"
+    if kind == "directory":
+        destination.mkdir()
+    elif kind == "symlink":
+        target = tmp_path / "target.ovpn"
+        target.write_text("target profile")
+        destination.symlink_to(target)
+    else:
+        destination.symlink_to(tmp_path / "missing.ovpn")
+
+    result = run_course(course_env, "export", str(destination), "--force")
+
+    assert result.returncode != 0
+    assert "regular file" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [(), ("--force",), ("course.ovpn", "--invalid"), ("course.ovpn", "--force", "extra")],
+)
+def test_export_rejects_invalid_argument_shapes(course_env, tmp_path, args) -> None:
+    result = run_course(course_env, "export", *args, cwd=tmp_path)
+
+    assert result.returncode != 0
+    assert "usage: openvpn-course export DEST [--force]" in result.stderr
+
+
+def test_export_handles_a_leading_dash_destination_safely(course_env, tmp_path) -> None:
+    result = run_course(course_env, "export", "-course.ovpn", cwd=tmp_path)
+
+    destination = tmp_path / "-course.ovpn"
+    assert result.returncode == 0
+    assert destination.read_text() == "client\n<key>secret</key>\n"
+    assert destination.stat().st_mode & 0o777 == 0o600
 
 
 def test_logs_delegates_to_course_systemd_unit(course_env, tmp_path) -> None:

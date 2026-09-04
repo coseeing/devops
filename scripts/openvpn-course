@@ -41,15 +41,20 @@ status_command() {
 }
 
 export_command() {
-  local destination=${1:-}
-  local force=${2:-}
-  [[ $# -le 2 ]] || die "usage: openvpn-course export DEST [--force]"
-  [[ -n "$destination" ]] || die "usage: openvpn-course export DEST [--force]"
-  [[ -z "$force" || "$force" == --force ]] || die "usage: openvpn-course export DEST [--force]"
+  local destination force=
+  [[ $# -ge 1 && $# -le 2 ]] || die "usage: openvpn-course export DEST [--force]"
+  destination=$1
+  [[ "$destination" != --force ]] || die "usage: openvpn-course export DEST [--force]"
+  if [[ $# -eq 2 ]]; then
+    force=$2
+    [[ "$force" == --force ]] || die "usage: openvpn-course export DEST [--force]"
+  fi
+  [[ ! -L "$destination" ]] || die "destination must be a regular file: $destination"
+  [[ ! -e "$destination" || -f "$destination" ]] || die "destination must be a regular file: $destination"
   [[ ! -e "$destination" || "$force" == --force ]] || die "destination already exists: $destination"
-  install -m 0600 "$PROFILE_PATH" "$destination"
+  install -m 0600 -- "$PROFILE_PATH" "$destination"
   if [[ ${SUDO_UID:-} =~ ^[0-9]+$ && ${SUDO_GID:-} =~ ^[0-9]+$ ]]; then
-    chown "$SUDO_UID:$SUDO_GID" "$destination"
+    chown "$SUDO_UID:$SUDO_GID" -- "$destination"
   fi
   printf 'Exported %s\n' "$destination"
 }
