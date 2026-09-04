@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+readonly PRODUCTION_ENV_FILE=/etc/openvpn/openvpn-course.env
+ENV_FILE=${OPENVPN_COURSE_ENV_FILE:-$PRODUCTION_ENV_FILE}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+load_environment() {
+  [[ -f "$ENV_FILE" ]] || die "configuration not found: $ENV_FILE"
+  if [[ "$ENV_FILE" == "$PRODUCTION_ENV_FILE" ]]; then
+    [[ $EUID -eq 0 ]] || die "run with sudo"
+    [[ $(stat -c '%u' "$ENV_FILE") == 0 ]] || die "configuration must be root-owned"
+    local mode
+    mode=$(stat -c '%a' "$ENV_FILE")
+    (( (8#$mode & 8#077) == 0 )) || die "configuration must not be accessible by group or other"
+  fi
+
+  # The Ansible template shell-quotes every value and defines only the allowlisted names.
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  local name
+  for name in PROFILE_PATH PKI_DIR ACTIVE_CLIENT_CN_FILE STATUS_PATH ENDPOINT VPN_CIDR WINDOWS_CIDR PROFILE_BUCKET AWS_REGION; do
+    [[ -n ${!name:-} ]] || die "missing configuration: $name"
+  done
+}
+
+status_command() {
+  local clients=0 service_state listener expiry active_cn
+  active_cn=$(<"$ACTIVE_CLIENT_CN_FILE")
+  service_state=$(systemctl is-active openvpn-server@course 2>/dev/null || true)
+  listener=$(ss -lun 2>/dev/null | grep -Ec '[:.]1194[[:space:]]' || true)
+  [[ -f "$STATUS_PATH" ]] && clients=$(grep -c '^CLIENT_LIST,' "$STATUS_PATH" || true)
+  expiry=$(openssl x509 -in "$PKI_DIR/pki/issued/$active_cn.crt" -enddate -noout 2>/dev/null || true)
+  printf 'Service: %s\nUDP 1194 listeners: %s\nEndpoint: %s\nVPN CIDR: %s\nWindows CIDR: %s\nConnected clients: %s\nCertificate: %s\n' \
+    "${service_state:-unknown}" "$listener" "$ENDPOINT" "$VPN_CIDR" "$WINDOWS_CIDR" "$clients" "${expiry:-unknown}"
+}
+
+export_command() {
+  local destination=${1:-}
+  local force=${2:-}
+  [[ $# -le 2 ]] || die "usage: openvpn-course export DEST [--force]"
+  [[ -n "$destination" ]] || die "usage: openvpn-course export DEST [--force]"
+  [[ -z "$force" || "$force" == --force ]] || die "usage: openvpn-course export DEST [--force]"
+  [[ ! -e "$destination" || "$force" == --force ]] || die "destination already exists: $destination"
+  install -m 0600 "$PROFILE_PATH" "$destination"
+  if [[ ${SUDO_UID:-} =~ ^[0-9]+$ && ${SUDO_GID:-} =~ ^[0-9]+$ ]]; then
+    chown "$SUDO_UID:$SUDO_GID" "$destination"
+  fi
+  printf 'Exported %s\n' "$destination"
+}
+
+logs_command() {
+  journalctl -u openvpn-server@course --no-pager -n 100
+}
+
+load_environment
+case ${1:-} in
+  status)
+    [[ $# -eq 1 ]] || die "usage: openvpn-course status"
+    status_command
+    ;;
+  export)
+    shift
+    export_command "$@"
+    ;;
+  logs)
+    [[ $# -eq 1 ]] || die "usage: openvpn-course logs"
+    logs_command
+    ;;
+  *) die "usage: openvpn-course {status|export|logs}" ;;
+esac
