@@ -40,70 +40,137 @@ status_command() {
     "${service_state:-unknown}" "$listener" "$ENDPOINT" "$VPN_CIDR" "$WINDOWS_CIDR" "$clients" "${expiry:-unknown}"
 }
 
-file_identity() {
-  if stat -c '%d:%i' "$1" >/dev/null 2>&1; then
-    stat -c '%d:%i' "$1"
-  else
-    stat -f '%d:%i' "$1"
-  fi
-}
-
 publish_export() {
-  local destination_directory=$1 destination_name=$2 temporary_name=$3 force=$4
-  python3 - "$destination_directory" "$destination_name" "$temporary_name" "$force" <<'PY'
+  local profile_path=$1 destination_directory=$2 destination_name=$3 force=$4 owner_uid=$5 owner_gid=$6
+  python3 - "$profile_path" "$destination_directory" "$destination_name" "$force" "$owner_uid" "$owner_gid" <<'PY'
+import errno
 import os
+import secrets
 import stat
 import sys
 
-directory, destination_name, temporary_name, force = sys.argv[1:]
-directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-directory_fd = os.open(directory, directory_flags)
-try:
-    temporary_stat = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
-    if not stat.S_ISREG(temporary_stat.st_mode):
-        raise RuntimeError("temporary export is not a regular file")
+profile_path, directory, destination_name, force, owner_uid, owner_gid = sys.argv[1:]
 
+
+class ExportError(Exception):
+    pass
+
+
+def close_fd(fd):
+    if fd >= 0:
+        os.close(fd)
+
+
+def sync_directory(directory_fd):
+    try:
+        os.fsync(directory_fd)
+    except OSError as error:
+        if error.errno not in (errno.EINVAL, errno.EROFS):
+            raise
+
+
+def copy_file(source_fd, staging_fd):
+    while True:
+        chunk = os.read(source_fd, 1024 * 1024)
+        if not chunk:
+            return
+        view = memoryview(chunk)
+        while view:
+            written = os.write(staging_fd, view)
+            view = view[written:]
+
+
+def create_staging_file(directory_fd):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for _ in range(32):
+        name = ".openvpn-course." + secrets.token_hex(16)
+        try:
+            return name, os.open(name, flags, 0o600, dir_fd=directory_fd)
+        except FileExistsError:
+            continue
+    raise ExportError("could not create export temporary file")
+
+
+def publish(directory_fd, staging_name, destination_name, force):
     try:
         destination_stat = os.stat(destination_name, dir_fd=directory_fd, follow_symlinks=False)
     except FileNotFoundError:
         destination_stat = None
 
     if destination_stat is None:
-        os.link(
-            temporary_name,
-            destination_name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-        os.unlink(temporary_name, dir_fd=directory_fd)
-    else:
-        if force != "--force":
-            raise RuntimeError("destination already exists")
-        if not stat.S_ISREG(destination_stat.st_mode):
-            raise RuntimeError("destination must be a regular file")
-        os.replace(
-            temporary_name,
-            destination_name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-        )
-finally:
-    os.close(directory_fd)
+        try:
+            os.link(
+                staging_name,
+                destination_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError as error:
+            raise ExportError("destination already exists") from error
+        os.unlink(staging_name, dir_fd=directory_fd)
+        return
+
+    if force != "--force":
+        raise ExportError("destination already exists")
+    if not stat.S_ISREG(destination_stat.st_mode):
+        raise ExportError("destination must be a regular file")
+    os.replace(
+        staging_name,
+        destination_name,
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+    )
+
+
+def main():
+    source_fd = directory_fd = staging_fd = -1
+    staging_name = None
+    staging_identity = None
+    try:
+        source_fd = os.open(profile_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            raise ExportError("profile must be a regular file")
+
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        directory_fd = os.open(directory, directory_flags)
+        staging_name, staging_fd = create_staging_file(directory_fd)
+        staging_stat = os.fstat(staging_fd)
+        if not stat.S_ISREG(staging_stat.st_mode):
+            raise ExportError("temporary export is not a regular file")
+        staging_identity = (staging_stat.st_dev, staging_stat.st_ino)
+
+        copy_file(source_fd, staging_fd)
+        os.fchmod(staging_fd, 0o600)
+        if owner_uid and owner_gid:
+            os.fchown(staging_fd, int(owner_uid), int(owner_gid))
+        os.fsync(staging_fd)
+        publish(directory_fd, staging_name, destination_name, force)
+        staging_name = None
+        sync_directory(directory_fd)
+    except (ExportError, OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if directory_fd >= 0 and staging_name is not None and staging_identity is not None:
+            try:
+                current = os.stat(staging_name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == staging_identity:
+                    os.unlink(staging_name, dir_fd=directory_fd)
+            except OSError:
+                pass
+        close_fd(staging_fd)
+        close_fd(source_fd)
+        close_fd(directory_fd)
+    return 0
+
+
+raise SystemExit(main())
 PY
 }
 
 export_command() {
-  local destination force= destination_directory destination_name
-  local temporary= temporary_identity=
-  cleanup_export_temp() {
-    local current_identity
-    [[ -n "$temporary" && -n "$temporary_identity" ]] || return
-    [[ ! -L "$temporary" && -f "$temporary" ]] || return
-    current_identity=$(file_identity "$temporary" 2>/dev/null || true)
-    [[ "$current_identity" == "$temporary_identity" ]] || return
-    rm -f -- "$temporary"
-  }
+  local destination force= destination_directory destination_name owner_uid= owner_gid=
 
   [[ $# -ge 1 && $# -le 2 ]] || die "usage: openvpn-course export DEST [--force]"
   destination=$1
@@ -126,25 +193,11 @@ export_command() {
       ;;
   esac
   [[ -n "$destination_name" ]] || die "destination must name a regular file: $destination"
-  [[ -d "$destination_directory" && ! -L "$destination_directory" ]] || die "destination directory is not available: $destination_directory"
-  [[ ! -L "$destination" ]] || die "destination must be a regular file: $destination"
-  [[ ! -e "$destination" || -f "$destination" ]] || die "destination must be a regular file: $destination"
-  [[ ! -e "$destination" || "$force" == --force ]] || die "destination already exists: $destination"
-
-  temporary=$(mktemp -p "$destination_directory" '.openvpn-course.XXXXXX') || die "could not create export temporary file"
-  temporary_identity=$(file_identity "$temporary") || die "could not validate export temporary file"
-  [[ ! -L "$temporary" && -f "$temporary" ]] || die "export temporary file is not a regular file"
-  trap cleanup_export_temp EXIT
-  install -m 0600 -- "$PROFILE_PATH" "$temporary"
-  temporary_identity=$(file_identity "$temporary") || die "could not validate export temporary file"
-  [[ ! -L "$temporary" && -f "$temporary" ]] || die "export temporary file is not a regular file"
   if [[ ${SUDO_UID:-} =~ ^[0-9]+$ && ${SUDO_GID:-} =~ ^[0-9]+$ ]]; then
-    chown "$SUDO_UID:$SUDO_GID" -- "$temporary"
+    owner_uid=$SUDO_UID
+    owner_gid=$SUDO_GID
   fi
-  publish_export "$destination_directory" "$destination_name" "${temporary##*/}" "$force" || die "could not publish export: $destination"
-  temporary=
-  temporary_identity=
-  trap - EXIT
+  publish_export "$PROFILE_PATH" "$destination_directory" "$destination_name" "$force" "$owner_uid" "$owner_gid" || die "could not publish export: $destination"
   printf 'Exported %s\n' "$destination"
 }
 

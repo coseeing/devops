@@ -112,63 +112,46 @@ def test_export_handles_a_leading_dash_destination_safely(course_env, tmp_path) 
     assert destination.stat().st_mode & 0o777 == 0o600
 
 
-def test_export_chowns_a_temporary_file_before_publication(course_env, tmp_path) -> None:
+def test_export_uses_no_external_install_or_chown_commands(course_env, tmp_path) -> None:
     destination = tmp_path / "course.ovpn"
     destination.write_text("old profile")
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
-    chown_log = tmp_path / "chown.log"
-    chown = mock_bin / "chown"
-    chown.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CHOWN_LOG\"\n")
-    chown.chmod(0o755)
+    for command in ("install", "chown"):
+        executable = mock_bin / command
+        executable.write_text("#!/bin/sh\nexit 99\n")
+        executable.chmod(0o755)
     env = {
         **course_env,
         "PATH": f"{mock_bin}:{course_env['PATH']}",
-        "SUDO_UID": "123",
-        "SUDO_GID": "456",
-        "CHOWN_LOG": str(chown_log),
+        "SUDO_UID": str(os.getuid()),
+        "SUDO_GID": str(os.getgid()),
     }
 
     result = run_course(env, "export", str(destination), "--force")
 
-    chown_arguments = chown_log.read_text().splitlines()
     assert result.returncode == 0
-    assert chown_arguments[:2] == ["123:456", "--"]
-    assert chown_arguments[-1] != str(destination)
-    assert Path(chown_arguments[-1]).name.startswith(".openvpn-course.")
     assert destination.read_text() == "client\n<key>secret</key>\n"
+    assert destination.stat().st_uid == os.getuid()
+    assert destination.stat().st_gid == os.getgid()
 
 
-def test_export_does_not_follow_a_destination_substituted_before_publication(
-    course_env, tmp_path
-) -> None:
-    destination = tmp_path / "course.ovpn"
-    destination.write_text("old profile")
-    protected_target = tmp_path / "protected.ovpn"
-    protected_target.write_text("protected profile")
-    mock_bin = tmp_path / "bin"
-    mock_bin.mkdir()
-    chown = mock_bin / "chown"
-    chown.write_text(
-        "#!/bin/sh\n"
-        "rm -f -- \"$DESTINATION\"\n"
-        "ln -s \"$PROTECTED_TARGET\" \"$DESTINATION\"\n"
+def test_export_rejects_a_symlinked_profile(course_env, tmp_path) -> None:
+    profile = tmp_path / "current.ovpn"
+    profile_link = tmp_path / "current-link.ovpn"
+    profile_link.symlink_to(profile)
+    environment_file = Path(course_env["OPENVPN_COURSE_ENV_FILE"])
+    environment_file.write_text(
+        environment_file.read_text().replace(
+            f"PROFILE_PATH={profile}", f"PROFILE_PATH={profile_link}"
+        )
     )
-    chown.chmod(0o755)
-    env = {
-        **course_env,
-        "PATH": f"{mock_bin}:{course_env['PATH']}",
-        "SUDO_UID": "123",
-        "SUDO_GID": "456",
-        "DESTINATION": str(destination),
-        "PROTECTED_TARGET": str(protected_target),
-    }
+    destination = tmp_path / "course.ovpn"
 
-    result = run_course(env, "export", str(destination), "--force")
+    result = run_course(course_env, "export", str(destination))
 
     assert result.returncode != 0
-    assert destination.is_symlink()
-    assert protected_target.read_text() == "protected profile"
+    assert not destination.exists()
     assert not list(tmp_path.glob(".openvpn-course.*"))
 
 
