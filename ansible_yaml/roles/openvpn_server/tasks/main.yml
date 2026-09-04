@@ -112,18 +112,78 @@
       {{ '/usr/local/bin/aws' if openvpn_aws_cli_local.stat.exists else
       ('/usr/bin/aws' if openvpn_aws_cli_usr.stat.exists else '/usr/local/bin/aws') }}
 
-- name: Verify S3 profile bucket when requested
-  ansible.builtin.command:
-    argv:
-      - "{{ openvpn_aws_cli_path }}"
-      - s3api
-      - head-bucket
-      - --bucket
-      - "{{ openvpn_profile_bucket }}"
-      - --region
-      - "{{ openvpn_aws_region }}"
-  changed_when: false
+- name: Verify temporary profile bucket permissions with sentinel data
   when: openvpn_verify_s3 | bool
+  no_log: true
+  block:
+    - name: Create temporary OpenVPN profile bucket sentinel
+      ansible.builtin.copy:
+        dest: /tmp/openvpn-course-s3-sentinel
+        content: "openvpn-course-sentinel-{{ ansible_date_time.epoch }}"
+        mode: "0600"
+
+    - name: Upload temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_path }}"
+          - s3
+          - cp
+          - /tmp/openvpn-course-s3-sentinel
+          - "s3://{{ openvpn_profile_bucket }}/profiles/sentinel-{{ ansible_date_time.epoch }}"
+          - --only-show-errors
+          - --region
+          - "{{ openvpn_aws_region }}"
+      changed_when: true
+
+    - name: Presign temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_path }}"
+          - s3
+          - presign
+          - "s3://{{ openvpn_profile_bucket }}/profiles/sentinel-{{ ansible_date_time.epoch }}"
+          - --expires-in
+          - "600"
+          - --region
+          - "{{ openvpn_aws_region }}"
+      register: openvpn_sentinel_url
+      changed_when: false
+
+    - name: Download temporary OpenVPN profile bucket sentinel
+      ansible.builtin.get_url:
+        url: "{{ openvpn_sentinel_url.stdout }}"
+        dest: /tmp/openvpn-course-s3-sentinel.downloaded
+        mode: "0600"
+
+    - name: Compare temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - cmp
+          - --silent
+          - /tmp/openvpn-course-s3-sentinel
+          - /tmp/openvpn-course-s3-sentinel.downloaded
+      changed_when: false
+  always:
+    - name: Delete temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_path }}"
+          - s3
+          - rm
+          - "s3://{{ openvpn_profile_bucket }}/profiles/sentinel-{{ ansible_date_time.epoch }}"
+          - --only-show-errors
+          - --region
+          - "{{ openvpn_aws_region }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Remove temporary OpenVPN profile bucket sentinel files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/openvpn-course-s3-sentinel
+        - /tmp/openvpn-course-s3-sentinel.downloaded
 
 - name: Create OpenVPN root-only directories
   ansible.builtin.file:

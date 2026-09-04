@@ -1,0 +1,252 @@
+name: Validate or deploy course OpenVPN
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Validate only or deploy
+        required: true
+        type: choice
+        options: [validate, deploy]
+      stack_name:
+        description: Existing Linux EC2 CloudFormation stack
+        required: true
+        default: coseeing-stack-v2
+      vpn_endpoint:
+        description: Stable VPN hostname or IPv4 address
+        required: true
+      windows_subnet_id:
+        description: Subnet containing the managed Windows VMs
+        required: true
+      vpn_cidr:
+        description: OpenVPN client address network
+        required: true
+        default: 10.250.0.0/24
+      client_days:
+        description: Shared client certificate validity in days
+        required: true
+        default: "30"
+      confirm_endpoint:
+        description: For deploy, type vpn_endpoint exactly
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+        working-directory: vms_portal
+      - run: uv run pytest ../tests/openvpn -q
+        working-directory: vms_portal
+      - run: uvx cfn-lint cloudformation/openvpn-distribution-template.yml
+      - name: Validate OpenVPN shell scripts
+        run: |
+          set -euo pipefail
+          for script in scripts/openvpn-course scripts/openvpn-course-firewall; do
+            bash -n "$script"
+          done
+      - run: python3 -m py_compile scripts/validate-openvpn-inputs.py ansible_yaml/filter_plugins/openvpn_filters.py
+      - name: Validate OpenVPN playbook syntax
+        run: >-
+          uv run --project vms_portal ansible-playbook
+          --syntax-check
+          --inventory localhost,
+          --connection local
+          --extra-vars openvpn_endpoint=vpn.coseeing.org
+          --extra-vars openvpn_vpn_cidr=10.250.0.0/24
+          --extra-vars openvpn_windows_cidr=10.0.8.0/24
+          --extra-vars openvpn_vpc_cidr=10.0.0.0/16
+          --extra-vars openvpn_profile_bucket=openvpn-course-profile-example
+          --extra-vars openvpn_client_days=30
+          ansible_yaml/openvpn-server-playbook.yml
+
+  deploy:
+    if: "inputs.action == 'deploy' && inputs.confirm_endpoint == inputs.vpn_endpoint"
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: a11y-village-production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-northeast-1
+      DISTRIBUTION_STACK_NAME: openvpn-course-profile-distribution
+      RUNTIME_ROLE_NAME: coseeing-ec2-common
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTION_ROLE }}
+          aws-region: ap-northeast-1
+      - name: Discover and normalize deployment inputs
+        id: discover
+        env:
+          CLIENT_DAYS: ${{ inputs.client_days }}
+          STACK_NAME: ${{ inputs.stack_name }}
+          VPN_CIDR: ${{ inputs.vpn_cidr }}
+          VPN_ENDPOINT: ${{ inputs.vpn_endpoint }}
+          WINDOWS_SUBNET_ID: ${{ inputs.windows_subnet_id }}
+        run: |
+          set -euo pipefail
+
+          [[ "$STACK_NAME" =~ ^[A-Za-z][-A-Za-z0-9]{0,127}$ ]]
+          [[ "$WINDOWS_SUBNET_ID" =~ ^subnet-[a-f0-9]{8,17}$ ]]
+          [[ "$CLIENT_DAYS" =~ ^[0-9]{1,3}$ ]]
+          [[ "$VPN_ENDPOINT" =~ ^[A-Za-z0-9.-]{1,253}$ ]]
+          [[ "$VPN_CIDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]
+
+          STACK_OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
+          HOST_IP=$(jq -r '.[] | select(.OutputKey == "InstancePublicIp") | .OutputValue' <<<"$STACK_OUTPUTS")
+          INSTANCE_ID=$(jq -r '.[] | select(.OutputKey == "InstanceId") | .OutputValue' <<<"$STACK_OUTPUTS")
+          [[ "$HOST_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+          [[ "$INSTANCE_ID" =~ ^i-[a-f0-9]{8,17}$ ]]
+
+          SUBNET_JSON=$(aws ec2 describe-subnets \
+            --subnet-ids "$WINDOWS_SUBNET_ID" \
+            --query 'Subnets[0].{cidr:CidrBlock,vpc:VpcId}' \
+            --output json)
+          WINDOWS_CIDR=$(jq -r .cidr <<<"$SUBNET_JSON")
+          VPC_ID=$(jq -r .vpc <<<"$SUBNET_JSON")
+          [[ "$WINDOWS_CIDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]
+          [[ "$VPC_ID" =~ ^vpc-[a-f0-9]{8,17}$ ]]
+          VPC_CIDR=$(aws ec2 describe-vpcs \
+            --vpc-ids "$VPC_ID" \
+            --query 'Vpcs[0].CidrBlock' \
+            --output text)
+          [[ "$VPC_CIDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]
+
+          NORMALIZED=$(python3 scripts/validate-openvpn-inputs.py \
+            --endpoint "$VPN_ENDPOINT" \
+            --vpn-cidr "$VPN_CIDR" \
+            --windows-cidr "$WINDOWS_CIDR" \
+            --vpc-cidr "$VPC_CIDR" \
+            --client-days "$CLIENT_DAYS")
+
+          ENDPOINT=$(jq -r .endpoint <<<"$NORMALIZED")
+          VPN_CIDR=$(jq -r .vpn_cidr <<<"$NORMALIZED")
+          WINDOWS_CIDR=$(jq -r .windows_cidr <<<"$NORMALIZED")
+          VPC_CIDR=$(jq -r .vpc_cidr <<<"$NORMALIZED")
+          CLIENT_DAYS=$(jq -r .client_days <<<"$NORMALIZED")
+
+          {
+            echo "host_ip=$HOST_IP"
+            echo "instance_id=$INSTANCE_ID"
+            echo "endpoint=$ENDPOINT"
+            echo "vpn_cidr=$VPN_CIDR"
+            echo "windows_cidr=$WINDOWS_CIDR"
+            echo "vpc_cidr=$VPC_CIDR"
+            echo "client_days=$CLIENT_DAYS"
+          } >> "$GITHUB_OUTPUT"
+      - name: Deploy profile distribution
+        id: distribution
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "$DISTRIBUTION_STACK_NAME" \
+            --template-file cloudformation/openvpn-distribution-template.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides ExistingRoleName="$RUNTIME_ROLE_NAME" \
+            --no-fail-on-empty-changeset
+
+          PROFILE_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$DISTRIBUTION_STACK_NAME" \
+            --query 'Stacks[0].Outputs[?OutputKey==`ProfileBucketName`].OutputValue | [0]' \
+            --output text)
+          [[ "$PROFILE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+
+          echo "profile_bucket=$PROFILE_BUCKET" >> "$GITHUB_OUTPUT"
+      - name: Install EC2 SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
+        run: |
+          set -euo pipefail
+
+          umask 077
+          printf '%s\n' "$EC2_SSH_KEY" > "$SSH_KEY_PATH"
+      - name: Install Ansible Core
+        run: python3 -m pip install ansible-core==2.21.3
+      - name: Deploy OpenVPN with Ansible
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+          CLIENT_DAYS: ${{ steps.discover.outputs.client_days }}
+          ENDPOINT: ${{ steps.discover.outputs.endpoint }}
+          HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}
+          SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
+          VPN_CIDR: ${{ steps.discover.outputs.vpn_cidr }}
+          VPC_CIDR: ${{ steps.discover.outputs.vpc_cidr }}
+          WINDOWS_CIDR: ${{ steps.discover.outputs.windows_cidr }}
+        run: |
+          set -euo pipefail
+
+          INVENTORY="$RUNNER_TEMP/openvpn-inventory"
+          printf '[openvpn]\n%s ansible_user=ubuntu ansible_ssh_private_key_file=%s\n' \
+            "$HOST_IP" "$SSH_KEY_PATH" > "$INVENTORY"
+
+          ansible-playbook \
+            --inventory "$INVENTORY" \
+            --extra-vars "openvpn_endpoint=$ENDPOINT" \
+            --extra-vars "openvpn_vpn_cidr=$VPN_CIDR" \
+            --extra-vars "openvpn_windows_cidr=$WINDOWS_CIDR" \
+            --extra-vars "openvpn_vpc_cidr=$VPC_CIDR" \
+            --extra-vars "openvpn_profile_bucket=$PROFILE_BUCKET" \
+            --extra-vars "openvpn_client_days=$CLIENT_DAYS" \
+            --extra-vars "openvpn_aws_region=$AWS_REGION" \
+            --extra-vars "openvpn_verify_s3=true" \
+            ansible_yaml/openvpn-server-playbook.yml
+      - name: Verify remote OpenVPN service state
+        env:
+          HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
+        run: |
+          set -euo pipefail
+
+          ssh -i "$SSH_KEY_PATH" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "ubuntu@$HOST_IP" \
+            'sudo systemctl is-active --quiet openvpn-course-firewall openvpn-server@course && sudo systemctl is-enabled --quiet openvpn-course-firewall openvpn-server@course && sudo ss -lun | grep -Eq "[:.]1194[[:space:]]" && test "$(sudo sysctl -n net.ipv4.ip_forward)" = 1 && sudo nft list table inet openvpn_course >/dev/null && sudo nft list table ip openvpn_course_nat >/dev/null'
+      - name: Deployment summary
+        env:
+          ENDPOINT: ${{ steps.discover.outputs.endpoint }}
+          HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          INSTANCE_ID: ${{ steps.discover.outputs.instance_id }}
+          PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}
+          VPN_CIDR: ${{ steps.discover.outputs.vpn_cidr }}
+          VPC_CIDR: ${{ steps.discover.outputs.vpc_cidr }}
+          WINDOWS_CIDR: ${{ steps.discover.outputs.windows_cidr }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo '### OpenVPN deployment'
+            echo
+            echo "- Endpoint: \`$ENDPOINT\`"
+            echo "- Linux EC2: \`$INSTANCE_ID\`"
+            echo "- Linux public IP: \`$HOST_IP\`"
+            echo "- VPN CIDR: \`$VPN_CIDR\`"
+            echo "- Windows CIDR: \`$WINDOWS_CIDR\`"
+            echo "- VPC CIDR: \`$VPC_CIDR\`"
+            echo "- Profile bucket: \`$PROFILE_BUCKET\`"
+            echo "- Remote checks: \`passed\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove EC2 SSH key
+        if: always()
+        env:
+          SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
+        run: |
+          set -euo pipefail
+
+          if [ -f "$SSH_KEY_PATH" ]; then
+            shred -u "$SSH_KEY_PATH" || rm -f "$SSH_KEY_PATH"
+          fi

@@ -74,6 +74,79 @@ def test_role_preserves_active_cn_and_installs_profile_renderer() -> None:
     ).read_text()
 
 
+def test_role_verifies_profile_bucket_with_no_log_sentinel_data() -> None:
+    tasks = load_role_tasks()
+    sentinel = named_task(
+        tasks, "Verify temporary profile bucket permissions with sentinel data"
+    )
+
+    assert sentinel["when"] == "openvpn_verify_s3 | bool"
+    assert sentinel["no_log"] is True
+    assert "current.ovpn" not in str(sentinel)
+
+    block_names = [str(task.get("name")) for task in sentinel["block"]]
+    assert block_names == [
+        "Create temporary OpenVPN profile bucket sentinel",
+        "Upload temporary OpenVPN profile bucket sentinel",
+        "Presign temporary OpenVPN profile bucket sentinel",
+        "Download temporary OpenVPN profile bucket sentinel",
+        "Compare temporary OpenVPN profile bucket sentinel",
+    ]
+    upload = sentinel["block"][1]["ansible.builtin.command"]["argv"]
+    presign = sentinel["block"][2]["ansible.builtin.command"]["argv"]
+    download = sentinel["block"][3]["ansible.builtin.get_url"]
+    compare = sentinel["block"][4]["ansible.builtin.command"]["argv"]
+    sentinel_key = (
+        "s3://{{ openvpn_profile_bucket }}/profiles/"
+        "sentinel-{{ ansible_date_time.epoch }}"
+    )
+    assert upload == [
+        "{{ openvpn_aws_cli_path }}",
+        "s3",
+        "cp",
+        "/tmp/openvpn-course-s3-sentinel",
+        sentinel_key,
+        "--only-show-errors",
+        "--region",
+        "{{ openvpn_aws_region }}",
+    ]
+    assert presign == [
+        "{{ openvpn_aws_cli_path }}",
+        "s3",
+        "presign",
+        sentinel_key,
+        "--expires-in",
+        "600",
+        "--region",
+        "{{ openvpn_aws_region }}",
+    ]
+    assert sentinel["block"][2]["register"] == "openvpn_sentinel_url"
+    assert download["url"] == "{{ openvpn_sentinel_url.stdout }}"
+    assert compare == [
+        "cmp",
+        "--silent",
+        "/tmp/openvpn-course-s3-sentinel",
+        "/tmp/openvpn-course-s3-sentinel.downloaded",
+    ]
+
+    always_names = [str(task.get("name")) for task in sentinel["always"]]
+    assert always_names == [
+        "Delete temporary OpenVPN profile bucket sentinel",
+        "Remove temporary OpenVPN profile bucket sentinel files",
+    ]
+    cleanup = sentinel["always"][0]
+    assert cleanup["ansible.builtin.command"]["argv"] == [
+        "{{ openvpn_aws_cli_path }}",
+        "s3",
+        "rm",
+        sentinel_key,
+        "--only-show-errors",
+        "--region",
+        "{{ openvpn_aws_region }}",
+    ]
+    assert cleanup["failed_when"] is False
+
+
 def test_role_installs_scoped_firewall_before_openvpn_without_regressing_rollback() -> None:
     tasks = load_role_tasks()
     names = [str(task.get("name")) for task in tasks]
