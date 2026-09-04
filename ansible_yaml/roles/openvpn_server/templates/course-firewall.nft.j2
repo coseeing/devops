@@ -1,0 +1,20 @@
+table inet openvpn_course {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname "tun-course" drop
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    oifname "tun-course" ct state established,related accept
+    iifname "tun-course" ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept
+    iifname "tun-course" drop
+  }
+}
+
+table ip openvpn_course_nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 masquerade
+  }
+}

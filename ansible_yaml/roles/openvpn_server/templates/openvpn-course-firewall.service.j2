@@ -1,0 +1,16 @@
+[Unit]
+Description=Course OpenVPN scoped firewall
+Before=openvpn-server@course.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/openvpn-course-firewall apply
+ExecReload=/usr/local/libexec/openvpn-course-firewall reload
+ExecStop=/usr/local/libexec/openvpn-course-firewall remove
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=openvpn-server@course.service

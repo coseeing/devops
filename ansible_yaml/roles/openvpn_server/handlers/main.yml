@@ -22,3 +22,9 @@
       ansible.builtin.fail:
         msg: "{{ ansible_failed_result.msg | default('OpenVPN reload failed') }}"
       when: not openvpn_reload_unsupported | bool
+
+- name: Reload course firewall
+  ansible.builtin.systemd_service:
+    name: openvpn-course-firewall
+    state: reloaded
+    daemon_reload: true

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly DEFAULT_RULES=/etc/openvpn/course-firewall.nft
+readonly RULES="${OPENVPN_COURSE_FIREWALL_RULES:-$DEFAULT_RULES}"
+
+usage() {
+  printf 'usage: openvpn-course-firewall {apply|reload|remove}\n' >&2
+}
+
+table_exists() {
+  nft list table "$@" >/dev/null 2>&1
+}
+
+remove_tables() {
+  if table_exists inet openvpn_course; then
+    nft delete table inet openvpn_course
+  fi
+  if table_exists ip openvpn_course_nat; then
+    nft delete table ip openvpn_course_nat
+  fi
+}
+
+write_replace_batch() {
+  local batch_file=$1
+  : >"$batch_file"
+  if table_exists inet openvpn_course; then
+    printf 'delete table inet openvpn_course\n' >>"$batch_file"
+  fi
+  if table_exists ip openvpn_course_nat; then
+    printf 'delete table ip openvpn_course_nat\n' >>"$batch_file"
+  fi
+  printf 'include "%s"\n' "$RULES" >>"$batch_file"
+}
+
+replace_tables() {
+  nft --check --file "$RULES"
+
+  local batch_dir
+  batch_dir=$(mktemp -d "${TMPDIR:-/tmp}/openvpn-course-firewall.XXXXXX")
+  local batch_file="$batch_dir/replace.nft"
+  trap 'rm -rf "$batch_dir"' RETURN
+
+  write_replace_batch "$batch_file"
+
+  # nft processes command files as one transaction, so scoped deletes and the
+  # replacement rules are committed together instead of creating an empty gap.
+  nft --check --file "$batch_file"
+  nft --file "$batch_file"
+}
+
+case "${1:-}" in
+  apply|reload)
+    replace_tables
+    ;;
+  remove)
+    remove_tables
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
