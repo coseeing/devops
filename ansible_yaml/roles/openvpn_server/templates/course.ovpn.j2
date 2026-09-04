@@ -1,0 +1,24 @@
+client
+dev tun
+proto udp
+remote {{ openvpn_endpoint }} {{ openvpn_port }}
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+tls-version-min 1.2
+data-ciphers AES-256-GCM:AES-128-GCM
+allow-compression no
+verb 3
+<ca>
+{{ openvpn_ca_certificate }}
+</ca>
+<cert>
+{{ openvpn_client_certificate }}
+</cert>
+<key>
+{{ openvpn_client_private_key }}
+</key>
+<tls-crypt>
+{{ openvpn_tls_crypt_key }}
+</tls-crypt>

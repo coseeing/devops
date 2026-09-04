@@ -1,0 +1,20 @@
+---
+openvpn_service_name: openvpn-server@course
+openvpn_firewall_service_name: openvpn-course-firewall
+openvpn_port: 1194
+openvpn_protocol: udp
+openvpn_tunnel_device: tun-course
+openvpn_pki_dir: /etc/openvpn/course-pki
+openvpn_profile_dir: /var/lib/openvpn-course
+openvpn_profile_path: /var/lib/openvpn-course/current.ovpn
+openvpn_active_client_cn_file: /var/lib/openvpn-course/active-client-cn
+openvpn_last_shared_key_file: /var/lib/openvpn-course/last-shared-key
+openvpn_server_dir: /etc/openvpn/server
+openvpn_server_config_path: /etc/openvpn/server/course.conf
+openvpn_server_crl_path: /etc/openvpn/server/crl.pem
+openvpn_status_path: /run/openvpn-server/course.status
+openvpn_client_days: 30
+openvpn_aws_region: ap-northeast-1
+openvpn_verify_s3: false
+openvpn_server_cn: course-server
+openvpn_initial_client_cn: course-shared

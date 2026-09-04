@@ -1,0 +1,7 @@
+---
+- name: Deploy course OpenVPN server
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - openvpn_server
