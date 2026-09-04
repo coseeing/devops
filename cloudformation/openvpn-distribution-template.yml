@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Private distribution of short-lived OpenVPN client profiles
+
+Parameters:
+  ExistingRoleName:
+    Type: String
+    Default: coseeing-ec2-common
+
+Resources:
+  ProfileBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTransientProfiles
+            Status: Enabled
+            Prefix: profiles/
+            ExpirationInDays: 1
+
+  ProfileBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ProfileBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ProfileBucket.Arn
+              - !Sub ${ProfileBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: DenyOldPresignedProfileDownloads
+            Effect: Deny
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub ${ProfileBucket.Arn}/profiles/*
+            Condition:
+              StringEquals:
+                s3:authType: REST-QUERY-STRING
+              NumericGreaterThan:
+                s3:signatureAge: 600000
+
+  ProfileDistributionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: openvpn-course-profile-distribution
+      Roles:
+        - !Ref ExistingRoleName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ManageTransientProfiles
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub ${ProfileBucket.Arn}/profiles/*
+
+Outputs:
+  ProfileBucketName:
+    Value: !Ref ProfileBucket
