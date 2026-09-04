@@ -4,6 +4,8 @@ umask 077
 
 readonly PRODUCTION_ENV_FILE=/etc/openvpn/openvpn-course.env
 ENV_FILE=${OPENVPN_COURSE_ENV_FILE:-$PRODUCTION_ENV_FILE}
+ROTATION_WORK=
+ROTATION_BACKUP=
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -24,7 +26,7 @@ load_environment() {
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   local name
-  for name in PROFILE_PATH PKI_DIR ACTIVE_CLIENT_CN_FILE STATUS_PATH ENDPOINT VPN_CIDR WINDOWS_CIDR PROFILE_BUCKET AWS_REGION; do
+  for name in PROFILE_PATH PKI_DIR ACTIVE_CLIENT_CN_FILE SERVER_CRL_PATH LAST_SHARED_KEY_FILE STATUS_PATH ENDPOINT VPN_CIDR WINDOWS_CIDR PROFILE_BUCKET AWS_REGION; do
     [[ -n ${!name:-} ]] || die "missing configuration: $name"
   done
 }
@@ -38,6 +40,101 @@ status_command() {
   expiry=$(openssl x509 -in "$PKI_DIR/pki/issued/$active_cn.crt" -enddate -noout 2>/dev/null || true)
   printf 'Service: %s\nUDP 1194 listeners: %s\nEndpoint: %s\nVPN CIDR: %s\nWindows CIDR: %s\nConnected clients: %s\nCertificate: %s\n' \
     "${service_state:-unknown}" "$listener" "$ENDPOINT" "$VPN_CIDR" "$WINDOWS_CIDR" "$clients" "${expiry:-unknown}"
+}
+
+atomic_staging_path() {
+  local target=$1 target_directory target_name
+  case "$target" in
+    */*)
+      target_directory=${target%/*}
+      [[ -n "$target_directory" ]] || target_directory=/
+      target_name=${target##*/}
+      ;;
+    *)
+      target_directory=.
+      target_name=$target
+      ;;
+  esac
+  [[ -n "$target_name" && "$target_name" != "." && "$target_name" != ".." ]] || return 1
+  [[ -d "$target_directory" ]] || return 1
+  mktemp "$target_directory/.${target_name}.XXXXXX"
+}
+
+publish_copy_atomically() {
+  local source=$1 target=$2 staging=
+  staging=$(atomic_staging_path "$target") || return 1
+  if ! cp -p "$source" "$staging"; then
+    rm -f "$staging"
+    return 1
+  fi
+  if ! mv -f "$staging" "$target"; then
+    rm -f "$staging"
+    return 1
+  fi
+}
+
+publish_file_atomically() {
+  local source=$1 target=$2 mode=$3 staging=
+  staging=$(atomic_staging_path "$target") || return 1
+  if ! install -m "$mode" "$source" "$staging"; then
+    rm -f "$staging"
+    return 1
+  fi
+  if ! mv -f "$staging" "$target"; then
+    rm -f "$staging"
+    return 1
+  fi
+}
+
+publish_text_atomically() {
+  local value=$1 target=$2 mode=$3 staging=
+  staging=$(atomic_staging_path "$target") || return 1
+  if ! printf '%s\n' "$value" >"$staging"; then
+    rm -f "$staging"
+    return 1
+  fi
+  if ! chmod "$mode" "$staging"; then
+    rm -f "$staging"
+    return 1
+  fi
+  if ! mv -f "$staging" "$target"; then
+    rm -f "$staging"
+    return 1
+  fi
+}
+
+safe_remove_rotation_directory() {
+  local path=${1:-}
+  case "$path" in
+    "$PKI_DIR"/rotate.*|"$PKI_DIR"/rollback.*)
+      rm -rf "$path"
+      ;;
+    "")
+      ;;
+    *)
+      printf 'warning: refusing to remove unexpected temporary path: %s\n' "$path" >&2
+      ;;
+  esac
+}
+
+cleanup_rotation() {
+  safe_remove_rotation_directory "${ROTATION_WORK:-}"
+  safe_remove_rotation_directory "${ROTATION_BACKUP:-}"
+  ROTATION_WORK=
+  ROTATION_BACKUP=
+}
+
+validate_rendered_profile() {
+  local profile=$1 block
+  for block in '<ca>' '<cert>' '<key>' '<tls-crypt>'; do
+    grep -Fq "$block" "$profile" || die "rendered profile is missing $block"
+  done
+}
+
+utc_after_seconds() {
+  local seconds=$1
+  date -u -d "+$seconds seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || \
+    date -u -v+"${seconds}"S '+%Y-%m-%dT%H:%M:%SZ'
 }
 
 publish_export() {
@@ -240,6 +337,99 @@ logs_command() {
   journalctl -u openvpn-server@course --no-pager -n 100
 }
 
+rotate_command() {
+  local days confirmation old_cn new_cn
+
+  [[ $# -eq 2 && ${1:-} == --days && ${2:-} =~ ^[0-9]+$ ]] || die "usage: openvpn-course rotate --days N"
+  days=$2
+  (( 10#$days >= 1 && 10#$days <= 365 )) || die "usage: openvpn-course rotate --days N"
+
+  printf 'Type ROTATE course-shared to invalidate every distributed profile: '
+  IFS= read -r confirmation || die "rotation cancelled"
+  [[ "$confirmation" == "ROTATE course-shared" ]] || die "rotation cancelled"
+
+  [[ -x "$PKI_DIR/easyrsa" ]] || die "missing Easy-RSA executable: $PKI_DIR/easyrsa"
+  [[ -x "$PKI_DIR/render-profile" ]] || die "missing profile renderer: $PKI_DIR/render-profile"
+  [[ -f "$PKI_DIR/pki/ca.crt" ]] || die "missing CA certificate: $PKI_DIR/pki/ca.crt"
+  [[ -f "$PKI_DIR/pki/crl.pem" ]] || die "missing PKI CRL: $PKI_DIR/pki/crl.pem"
+  [[ -f "$SERVER_CRL_PATH" ]] || die "missing installed CRL: $SERVER_CRL_PATH"
+  [[ -s "$ACTIVE_CLIENT_CN_FILE" ]] || die "missing active client CN"
+
+  old_cn=$(<"$ACTIVE_CLIENT_CN_FILE")
+  [[ -n "$old_cn" ]] || die "missing active client CN"
+  new_cn="course-shared-$(date -u +%Y%m%d%H%M%S)"
+  ROTATION_WORK=$(mktemp -d "$PKI_DIR/rotate.XXXXXX")
+  trap cleanup_rotation EXIT
+  ROTATION_BACKUP=$(mktemp -d "$PKI_DIR/rollback.XXXXXX")
+
+  (cd "$PKI_DIR" && EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE="$days" ./easyrsa build-client-full "$new_cn" nopass)
+  openssl verify -CAfile "$PKI_DIR/pki/ca.crt" "$PKI_DIR/pki/issued/$new_cn.crt"
+  "$PKI_DIR/render-profile" "$new_cn" >"$ROTATION_WORK/current.ovpn"
+  validate_rendered_profile "$ROTATION_WORK/current.ovpn"
+
+  cp -p "$PKI_DIR/pki/index.txt" "$ROTATION_BACKUP/index.txt"
+  cp -p "$PKI_DIR/pki/crlnumber" "$ROTATION_BACKUP/crlnumber"
+  cp -p "$PKI_DIR/pki/crl.pem" "$ROTATION_BACKUP/pki-crl.pem"
+  cp -p "$PROFILE_PATH" "$ROTATION_BACKUP/profile.ovpn"
+  cp -p "$ACTIVE_CLIENT_CN_FILE" "$ROTATION_BACKUP/active-client-cn"
+  cp -p "$SERVER_CRL_PATH" "$ROTATION_BACKUP/server-crl.pem"
+
+  rollback_rotation() {
+    local status=$? restore_failed=0
+    trap - ERR
+    printf 'error: rotation failed after revocation; restoring previous profile state\n' >&2
+    publish_copy_atomically "$ROTATION_BACKUP/index.txt" "$PKI_DIR/pki/index.txt" || restore_failed=1
+    publish_copy_atomically "$ROTATION_BACKUP/crlnumber" "$PKI_DIR/pki/crlnumber" || restore_failed=1
+    publish_copy_atomically "$ROTATION_BACKUP/pki-crl.pem" "$PKI_DIR/pki/crl.pem" || restore_failed=1
+    publish_file_atomically "$ROTATION_BACKUP/profile.ovpn" "$PROFILE_PATH" 0600 || restore_failed=1
+    publish_file_atomically "$ROTATION_BACKUP/active-client-cn" "$ACTIVE_CLIENT_CN_FILE" 0600 || restore_failed=1
+    publish_file_atomically "$ROTATION_BACKUP/server-crl.pem" "$SERVER_CRL_PATH" 0644 || restore_failed=1
+    systemctl reload openvpn-server@course || true
+    if (( restore_failed )); then
+      printf 'warning: rollback encountered one or more restore failures\n' >&2
+    fi
+    return "$status"
+  }
+
+  trap rollback_rotation ERR
+  (cd "$PKI_DIR" && EASYRSA_BATCH=1 ./easyrsa revoke "$old_cn" && EASYRSA_BATCH=1 ./easyrsa gen-crl)
+  publish_file_atomically "$ROTATION_WORK/current.ovpn" "$PROFILE_PATH" 0600
+  publish_text_atomically "$new_cn" "$ACTIVE_CLIENT_CN_FILE" 0600
+  publish_file_atomically "$PKI_DIR/pki/crl.pem" "$SERVER_CRL_PATH" 0644
+  systemctl reload openvpn-server@course
+  trap - ERR
+  trap - EXIT
+  cleanup_rotation
+  printf 'Rotated course shared profile to %s\n' "$new_cn"
+}
+
+share_command() {
+  local suffix key previous_key uri url expires_at
+
+  [[ $# -eq 0 ]] || die "usage: openvpn-course share"
+  suffix=$(openssl rand -hex 16)
+  [[ "$suffix" =~ ^[0-9a-f]{32}$ ]] || die "could not generate profile share key"
+  key="profiles/$suffix/course-vpn.ovpn"
+  uri="s3://$PROFILE_BUCKET/$key"
+
+  if [[ -s "$LAST_SHARED_KEY_FILE" ]]; then
+    previous_key=$(<"$LAST_SHARED_KEY_FILE")
+    if [[ "$previous_key" =~ ^profiles/[0-9a-f]{32}/course-vpn\.ovpn$ ]]; then
+      aws s3 rm "s3://$PROFILE_BUCKET/$previous_key" \
+        --only-show-errors --region "$AWS_REGION" || \
+        printf 'warning: previous object cleanup failed; S3 lifecycle remains active\n' >&2
+    else
+      printf 'warning: recorded previous profile key has unexpected format; skipping cleanup\n' >&2
+    fi
+  fi
+
+  aws s3 cp "$PROFILE_PATH" "$uri" --only-show-errors --region "$AWS_REGION"
+  url=$(aws s3 presign "$uri" --expires-in 600 --region "$AWS_REGION")
+  publish_text_atomically "$key" "$LAST_SHARED_KEY_FILE" 0600
+  expires_at=$(utc_after_seconds 600)
+  printf '%s\nExpires no later than: %s\n' "$url" "$expires_at"
+}
+
 load_environment
 case ${1:-} in
   status)
@@ -250,9 +440,17 @@ case ${1:-} in
     shift
     export_command "$@"
     ;;
+  rotate)
+    shift
+    rotate_command "$@"
+    ;;
+  share)
+    shift
+    share_command "$@"
+    ;;
   logs)
     [[ $# -eq 1 ]] || die "usage: openvpn-course logs"
     logs_command
     ;;
-  *) die "usage: openvpn-course {status|export|logs}" ;;
+  *) die "usage: openvpn-course {status|export|rotate|share|logs}" ;;
 esac

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,10 +17,15 @@ def course_env(tmp_path: Path) -> dict[str, str]:
     profile.write_text("client\n<key>secret</key>\n")
     status = tmp_path / "course.status"
     status.write_text("CLIENT_LIST,course-shared,198.51.100.8:5000\n")
+    server_crl = tmp_path / "server-crl.pem"
+    server_crl.write_text("old server crl\n")
+    last_shared_key = tmp_path / "last-shared-key"
     env_file = tmp_path / "course.env"
     env_file.write_text(
         f"PROFILE_PATH={profile}\nPKI_DIR={tmp_path}/pki\n"
         f"ACTIVE_CLIENT_CN_FILE={tmp_path}/active-client-cn\n"
+        f"SERVER_CRL_PATH={server_crl}\n"
+        f"LAST_SHARED_KEY_FILE={last_shared_key}\n"
         f"STATUS_PATH={status}\nENDPOINT=vpn.coseeing.org\n"
         "VPN_CIDR=10.250.0.0/24\nWINDOWS_CIDR=10.0.8.0/24\n"
         "PROFILE_BUCKET=test-bucket\nAWS_REGION=ap-northeast-1\n"
@@ -40,6 +46,73 @@ def run_course(
         check=False,
         cwd=cwd,
     )
+
+
+def configured_path(env: dict[str, str], name: str) -> Path:
+    for line in Path(env["OPENVPN_COURSE_ENV_FILE"]).read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key == name:
+            return Path(value)
+    raise AssertionError(f"{name} is not configured")
+
+
+@pytest.fixture
+def mock_commands(tmp_path: Path, course_env: dict[str, str]) -> Path:
+    call_log = tmp_path / "calls.log"
+    call_log.touch()
+    mock_bin = tmp_path / "mock-bin"
+    mock_bin.mkdir()
+    for name in ("aws", "openssl", "systemctl"):
+        command = mock_bin / name
+        command.write_text(
+            "#!/bin/bash\n"
+            f"printf '{name} %s\\n' \"$*\" >>\"{call_log}\"\n"
+            "if [[ $(basename \"$0\") == aws && ${MOCK_AWS_FAIL_PRESIGN:-} == 1 && $* == *'s3 presign'* ]]; then\n"
+            "  exit 43\n"
+            "fi\n"
+            "if [[ $(basename \"$0\") == systemctl && ${MOCK_SYSTEMCTL_FAIL_RELOAD:-} == 1 && $* == *'reload openvpn-server@course'* ]]; then\n"
+            "  exit 42\n"
+            "fi\n"
+            "if [[ $(basename \"$0\") == aws && $* == *'s3 presign'* ]]; then\n"
+            "  printf 'https://example.invalid/profile?signature=test\\n'\n"
+            "elif [[ $(basename \"$0\") == openssl && ${1:-} == rand ]]; then\n"
+            "  printf '0123456789abcdef0123456789abcdef\\n'\n"
+            "fi\n"
+        )
+        command.chmod(0o755)
+    pki = tmp_path / "pki"
+    (pki / "pki/issued").mkdir(parents=True)
+    (pki / "pki/private").mkdir()
+    (pki / "pki/ca.crt").write_text("ca\n")
+    (pki / "pki/index.txt").write_text("valid course-shared\n")
+    (pki / "pki/crlnumber").write_text("01\n")
+    (pki / "pki/crl.pem").write_text("old crl\n")
+    (pki / "pki/issued/course-shared.crt").write_text("old cert\n")
+    (pki / "pki/private/course-shared.key").write_text("old key\n")
+    easyrsa = pki / "easyrsa"
+    easyrsa.write_text(
+        "#!/bin/bash\n"
+        f"printf 'easyrsa %s\\n' \"$*\" >>\"{call_log}\"\n"
+        "if [[ ${1:-} == build-client-full ]]; then\n"
+        "  printf 'new cert\\n' >\"pki/issued/$2.crt\"\n"
+        "  printf 'new key\\n' >\"pki/private/$2.key\"\n"
+        "  printf 'valid %s\\n' \"$2\" >pki/index.txt\n"
+        "elif [[ ${1:-} == revoke ]]; then\n"
+        "  printf 'revoked %s\\n' \"$2\" >pki/index.txt\n"
+        "elif [[ ${1:-} == gen-crl ]]; then\n"
+        "  printf 'new crl\\n' >pki/crl.pem\n"
+        "  printf '02\\n' >pki/crlnumber\n"
+        "fi\n"
+    )
+    easyrsa.chmod(0o755)
+    renderer = pki / "render-profile"
+    renderer.write_text(
+        "#!/bin/sh\n"
+        "printf 'client\\n<ca>ca</ca>\\n<cert>cert</cert>\\n<key>key</key>\\n<tls-crypt>tls</tls-crypt>\\n'\n"
+    )
+    renderer.chmod(0o755)
+    course_env["PATH"] = f"{mock_bin}:{course_env['PATH']}"
+    return call_log
 
 
 def test_status_reports_metadata_without_profile_secret(course_env) -> None:
@@ -208,3 +281,155 @@ def test_logs_delegates_to_course_systemd_unit(course_env, tmp_path) -> None:
     course_env["PATH"] = f"{mock_bin}:{course_env['PATH']}"
     result = run_course(course_env, "logs")
     assert "-u openvpn-server@course --no-pager -n 100" in result.stdout
+
+
+def test_rotate_requires_exact_confirmation(course_env) -> None:
+    result = run_course(
+        course_env, "rotate", "--days", "30", input_text="ROTATE\n"
+    )
+    assert result.returncode != 0
+    assert "rotation cancelled" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        (),
+        ("--days",),
+        ("30",),
+        ("--days", "0"),
+        ("--days", "366"),
+        ("--days", "thirty"),
+        ("--days", "30", "extra"),
+    ],
+)
+def test_rotate_rejects_invalid_argument_shapes(course_env, args) -> None:
+    result = run_course(
+        course_env, "rotate", *args, input_text="ROTATE course-shared\n"
+    )
+    assert result.returncode != 0
+    assert "usage: openvpn-course rotate --days N" in result.stderr
+
+
+def test_rotate_builds_and_validates_before_revoking(
+    course_env, mock_commands
+) -> None:
+    result = run_course(
+        course_env,
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+    assert result.returncode == 0, result.stderr
+    calls = mock_commands.read_text().splitlines()
+    build_index = next(i for i, line in enumerate(calls) if "build-client-full" in line)
+    verify_index = next(i for i, line in enumerate(calls) if "verify" in line)
+    revoke_index = next(i for i, line in enumerate(calls) if "revoke course-shared" in line)
+    reload_index = next(
+        i for i, line in enumerate(calls) if "reload openvpn-server@course" in line
+    )
+    assert build_index < verify_index < revoke_index < reload_index
+    assert configured_path(course_env, "PROFILE_PATH").read_text().startswith(
+        "client\n<ca>ca</ca>\n"
+    )
+    assert configured_path(course_env, "ACTIVE_CLIENT_CN_FILE").read_text().startswith(
+        "course-shared-"
+    )
+    assert configured_path(course_env, "SERVER_CRL_PATH").read_text() == "new crl\n"
+
+
+def test_rotate_rolls_back_after_post_revoke_failure(
+    course_env, mock_commands
+) -> None:
+    result = run_course(
+        {**course_env, "MOCK_SYSTEMCTL_FAIL_RELOAD": "1"},
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode != 0
+    assert configured_path(course_env, "PROFILE_PATH").read_text() == (
+        "client\n<key>secret</key>\n"
+    )
+    assert configured_path(course_env, "ACTIVE_CLIENT_CN_FILE").read_text() == (
+        "course-shared\n"
+    )
+    assert configured_path(course_env, "SERVER_CRL_PATH").read_text() == (
+        "old server crl\n"
+    )
+    pki = configured_path(course_env, "PKI_DIR")
+    assert (pki / "pki/crl.pem").read_text() == "old crl\n"
+    assert "revoked course-shared" not in (pki / "pki/index.txt").read_text()
+    calls = mock_commands.read_text().splitlines()
+    assert sum("reload openvpn-server@course" in line for line in calls) == 2
+
+
+@pytest.mark.parametrize("args", [("extra",), ("--expires-in", "600")])
+def test_share_rejects_invalid_argument_shapes(course_env, args) -> None:
+    result = run_course(course_env, "share", *args)
+    assert result.returncode != 0
+    assert "usage: openvpn-course share" in result.stderr
+
+
+def test_share_uses_random_key_and_exact_ten_minute_expiry(
+    course_env, mock_commands
+) -> None:
+    result = run_course(course_env, "share")
+    assert result.returncode == 0, result.stderr
+    calls = mock_commands.read_text()
+    assert "s3 cp" in calls
+    assert "s3 presign" in calls
+    assert "--expires-in 600" in calls
+    assert "s3://test-bucket/profiles/" in calls
+    assert "secret" not in result.stdout
+    assert result.stdout.count("https://") == 1
+    assert re.search(
+        r"Expires no later than: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+        result.stdout,
+    )
+    assert configured_path(course_env, "LAST_SHARED_KEY_FILE").read_text() == (
+        "profiles/0123456789abcdef0123456789abcdef/course-vpn.ovpn\n"
+    )
+
+
+def test_share_removes_previous_profile_before_uploading_new_one(
+    course_env, mock_commands
+) -> None:
+    previous_key = "profiles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/course-vpn.ovpn"
+    configured_path(course_env, "LAST_SHARED_KEY_FILE").write_text(f"{previous_key}\n")
+
+    result = run_course(course_env, "share")
+
+    assert result.returncode == 0, result.stderr
+    calls = mock_commands.read_text().splitlines()
+    rm_index = next(
+        i
+        for i, line in enumerate(calls)
+        if f"s3 rm s3://test-bucket/{previous_key}" in line
+    )
+    cp_index = next(i for i, line in enumerate(calls) if "s3 cp" in line)
+    assert rm_index < cp_index
+    assert configured_path(course_env, "LAST_SHARED_KEY_FILE").read_text() == (
+        "profiles/0123456789abcdef0123456789abcdef/course-vpn.ovpn\n"
+    )
+
+
+def test_share_keeps_previous_key_when_presign_fails(
+    course_env, mock_commands
+) -> None:
+    previous_key = "profiles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/course-vpn.ovpn"
+    configured_path(course_env, "LAST_SHARED_KEY_FILE").write_text(f"{previous_key}\n")
+
+    result = run_course({**course_env, "MOCK_AWS_FAIL_PRESIGN": "1"}, "share")
+
+    assert result.returncode != 0
+    calls = mock_commands.read_text()
+    assert "s3 cp" in calls
+    assert "s3 presign" in calls
+    assert configured_path(course_env, "LAST_SHARED_KEY_FILE").read_text() == (
+        f"{previous_key}\n"
+    )
+    assert "https://" not in result.stdout
