@@ -11,6 +11,17 @@ ROLE = ROOT / "ansible_yaml/roles/openvpn_server"
 RENDERER = ROOT / "scripts/openvpn-course-render-profile"
 
 
+def load_role_tasks() -> list[dict[str, object]]:
+    return yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+
+
+def named_task(tasks: list[dict[str, object]], name: str) -> dict[str, object]:
+    for task in tasks:
+        if task.get("name") == name:
+            return task
+    raise AssertionError(f"missing task: {name}")
+
+
 def test_playbook_uses_only_openvpn_role() -> None:
     playbook = yaml.safe_load(
         (ROOT / "ansible_yaml/openvpn-server-playbook.yml").read_text()
@@ -60,6 +71,42 @@ def test_role_preserves_active_cn_and_installs_profile_renderer() -> None:
     assert 'LAST_SHARED_KEY_FILE=/var/lib/openvpn-course/last-shared-key' in (
         ROLE / "templates/openvpn-course.env.j2"
     ).read_text()
+
+
+def test_role_does_not_include_task6_firewall_side_effects() -> None:
+    tasks = (ROLE / "tasks/main.yml").read_text()
+    handlers = (ROLE / "handlers/main.yml").read_text()
+    combined = f"{tasks}\n{handlers}"
+    for forbidden in (
+        "openvpn-course-firewall",
+        "nftables",
+        "nft ",
+        "net.ipv4.ip_forward",
+        "sysctl",
+        "Reload course firewall",
+    ):
+        assert forbidden not in combined
+
+
+def test_activation_rollback_restores_captured_service_state() -> None:
+    tasks = load_role_tasks()
+    names = [str(task.get("name")) for task in tasks]
+    activation_index = names.index("Activate OpenVPN artifacts transactionally")
+    assert names.index("Capture prior OpenVPN active state") < activation_index
+    assert names.index("Capture prior OpenVPN enabled state") < activation_index
+    assert names.index("Resolve previous active OpenVPN file presence") < activation_index
+
+    tasks_text = (ROLE / "tasks/main.yml").read_text()
+    assert "openvpn_previous_server_config" not in tasks_text
+    assert "openvpn_prior_active_state" in tasks_text
+    assert "openvpn_prior_enabled_state" in tasks_text
+    assert "openvpn_had_previous_active_files" in tasks_text
+
+    activation = named_task(tasks, "Activate OpenVPN artifacts transactionally")
+    rescue_names = [str(task.get("name")) for task in activation["rescue"]]
+    assert "Restore prior OpenVPN enabled state" in rescue_names
+    assert "Restore active OpenVPN service after rollback" in rescue_names
+    assert "Stop OpenVPN service after rollback" in rescue_names
 
 
 def write_renderer_fixture(tmp_path: Path) -> dict[str, str]:

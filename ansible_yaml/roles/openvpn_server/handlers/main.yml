@@ -1,13 +1,4 @@
 ---
-- name: Reload systemd
-  ansible.builtin.systemd_service:
-    daemon_reload: true
-
-- name: Reload course firewall
-  ansible.builtin.systemd_service:
-    name: openvpn-course-firewall
-    state: reloaded
-
 - name: Reload course OpenVPN
   block:
     - name: Reload course OpenVPN via systemd

@@ -1,6 +1,5 @@
 ---
 openvpn_service_name: openvpn-server@course
-openvpn_firewall_service_name: openvpn-course-firewall
 openvpn_port: 1194
 openvpn_protocol: udp
 openvpn_tunnel_device: tun-course

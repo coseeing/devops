@@ -47,7 +47,6 @@
     name:
       - openvpn
       - easy-rsa
-      - nftables
       - openssl
       - ca-certificates
       - curl
@@ -323,74 +322,6 @@
     group: root
     mode: "0750"
 
-- name: Install OpenVPN course firewall helper
-  ansible.builtin.copy:
-    dest: /usr/local/sbin/openvpn-course-firewall
-    owner: root
-    group: root
-    mode: "0750"
-    content: |
-      #!/usr/bin/env sh
-      set -eu
-
-      case "${1:-apply}" in
-        apply|reload)
-          sysctl -w net.ipv4.ip_forward=1 >/dev/null
-          nft delete table inet openvpn_course 2>/dev/null || true
-          nft delete table ip openvpn_course_nat 2>/dev/null || true
-          nft -f - <<'NFT'
-      table inet openvpn_course {
-        chain forward {
-          type filter hook forward priority 0; policy accept;
-          iifname "{{ openvpn_tunnel_device }}" ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} accept
-          oifname "{{ openvpn_tunnel_device }}" ip saddr {{ openvpn_windows_cidr }} ip daddr {{ openvpn_vpn_cidr }} ct state established,related accept
-        }
-      }
-      table ip openvpn_course_nat {
-        chain postrouting {
-          type nat hook postrouting priority srcnat; policy accept;
-          ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} masquerade
-        }
-      }
-      NFT
-          ;;
-        stop)
-          nft delete table inet openvpn_course 2>/dev/null || true
-          nft delete table ip openvpn_course_nat 2>/dev/null || true
-          ;;
-        *)
-          printf 'usage: openvpn-course-firewall {apply|reload|stop}\n' >&2
-          exit 2
-          ;;
-      esac
-
-- name: Install OpenVPN course firewall unit
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/openvpn-course-firewall.service
-    owner: root
-    group: root
-    mode: "0644"
-    content: |
-      [Unit]
-      Description=OpenVPN course split-tunnel firewall
-      Wants=network-online.target
-      After=network-online.target nftables.service
-      Before=openvpn-server@course.service
-
-      [Service]
-      Type=oneshot
-      RemainAfterExit=yes
-      ExecStart=/usr/local/sbin/openvpn-course-firewall apply
-      ExecReload=/usr/local/sbin/openvpn-course-firewall reload
-      ExecStop=/usr/local/sbin/openvpn-course-firewall stop
-
-      [Install]
-      WantedBy=multi-user.target
-  notify: Reload systemd
-
-- name: Reload systemd before starting firewall unit
-  ansible.builtin.meta: flush_handlers
-
 - name: Render staged OpenVPN server configuration
   ansible.builtin.template:
     src: course.conf.j2
@@ -481,11 +412,6 @@
   loop: "{{ openvpn_active_files }}"
   no_log: "{{ item.secret }}"
 
-- name: Check previous course server configuration
-  ansible.builtin.stat:
-    path: "{{ openvpn_server_config_path }}"
-  register: openvpn_previous_server_config
-
 - name: Check existing active OpenVPN files
   ansible.builtin.stat:
     path: "{{ item.path }}"
@@ -513,6 +439,25 @@
   loop: "{{ openvpn_active_file_stats.results }}"
   when: item.stat.exists
   no_log: "{{ item.item.secret }}"
+
+- name: Capture prior OpenVPN active state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, openvpn-server@course]
+  register: openvpn_prior_active_state
+  changed_when: false
+  failed_when: false
+
+- name: Capture prior OpenVPN enabled state
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, openvpn-server@course]
+  register: openvpn_prior_enabled_state
+  changed_when: false
+  failed_when: false
+
+- name: Resolve previous active OpenVPN file presence
+  ansible.builtin.set_fact:
+    openvpn_had_previous_active_files: >-
+      {{ openvpn_active_file_stats.results | selectattr('stat.exists') | list | length > 0 }}
 
 - name: Activate OpenVPN artifacts transactionally
   block:
@@ -578,12 +523,6 @@
       no_log: "{{ item.secret }}"
       notify: Reload course OpenVPN
 
-    - name: Enable and start course firewall
-      ansible.builtin.systemd_service:
-        name: openvpn-course-firewall
-        enabled: true
-        state: started
-
     - name: Enable and start course OpenVPN
       ansible.builtin.systemd_service:
         name: openvpn-server@course
@@ -618,25 +557,52 @@
       when: not item.stat.exists
       no_log: "{{ item.item.secret }}"
 
-    - name: Reload course firewall after rollback
-      ansible.builtin.systemd_service:
-        name: openvpn-course-firewall
-        state: reloaded
-      failed_when: false
-
-    - name: Reload course OpenVPN after rollback
+    - name: Restore prior OpenVPN enabled state
       ansible.builtin.systemd_service:
         name: openvpn-server@course
-        state: reloaded
+        enabled: "{{ openvpn_prior_enabled_state.stdout == 'enabled' }}"
       failed_when: false
-      when: openvpn_previous_server_config.stat.exists
+      when: openvpn_prior_enabled_state.stdout in ['enabled', 'disabled']
 
-    - name: Stop course OpenVPN after failed first deploy
+    - name: Restore active OpenVPN service after rollback
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: started
+      failed_when: false
+      when:
+        - openvpn_had_previous_active_files | bool
+        - openvpn_prior_active_state.stdout == 'active'
+
+    - name: Reload active OpenVPN service after rollback
+      ansible.builtin.command:
+        argv: [systemctl, reload, openvpn-server@course]
+      register: openvpn_rollback_reload
+      changed_when: true
+      failed_when: false
+      when:
+        - openvpn_had_previous_active_files | bool
+        - openvpn_prior_active_state.stdout == 'active'
+
+    - name: Restart active OpenVPN service after rollback when reload is unsupported
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: restarted
+      failed_when: false
+      when:
+        - openvpn_had_previous_active_files | bool
+        - openvpn_prior_active_state.stdout == 'active'
+        - openvpn_rollback_reload.rc != 0
+        - >-
+          'Job type reload is not applicable' in (openvpn_rollback_reload.stderr | default(''))
+          or 'not supported' in (openvpn_rollback_reload.stderr | default(''))
+
+    - name: Stop OpenVPN service after rollback
       ansible.builtin.systemd_service:
         name: openvpn-server@course
         state: stopped
       failed_when: false
-      when: not openvpn_previous_server_config.stat.exists
+      when:
+        - (not (openvpn_had_previous_active_files | bool)) or openvpn_prior_active_state.stdout != 'active'
 
     - name: Fail after OpenVPN activation rollback
       ansible.builtin.fail:
