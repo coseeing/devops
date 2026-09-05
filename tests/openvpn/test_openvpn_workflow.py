@@ -76,3 +76,20 @@ def test_deployment_summary_excludes_topology_outputs() -> None:
     assert "Profile bucket:" in summary_run
     assert "Deployment:" in summary_run
     assert "Remote checks:" in summary_run
+
+
+def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
+    text = (ROOT / "docs/openvpn-course-operations.md").read_text()
+    for required in (
+        "sudo openvpn-course status",
+        "sudo openvpn-course share",
+        "sudo openvpn-course export",
+        "sudo openvpn-course rotate --days 30",
+        "sudo openvpn-course logs",
+        "UDP 1194",
+        "TCP 3389",
+        "Private IPv4",
+        "10 minutes",
+    ):
+        assert required in text
+    assert "does not modify Security Groups" in text
