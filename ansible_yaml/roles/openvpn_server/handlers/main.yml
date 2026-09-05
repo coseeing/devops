@@ -1,0 +1,30 @@
+---
+- name: Reload course OpenVPN
+  block:
+    - name: Reload course OpenVPN via systemd
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: reloaded
+  rescue:
+    - name: Detect unsupported OpenVPN reload
+      ansible.builtin.set_fact:
+        openvpn_reload_unsupported: >-
+          {{ 'Job type reload is not applicable' in (ansible_failed_result.msg | default(''))
+          or 'not supported' in (ansible_failed_result.msg | default('')) }}
+
+    - name: Restart course OpenVPN when reload is unsupported
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: restarted
+      when: openvpn_reload_unsupported | bool
+
+    - name: Fail course OpenVPN reload
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_result.msg | default('OpenVPN reload failed') }}"
+      when: not openvpn_reload_unsupported | bool
+
+- name: Reload course firewall
+  ansible.builtin.systemd_service:
+    name: openvpn-course-firewall
+    state: reloaded
+    daemon_reload: true

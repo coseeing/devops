@@ -1,0 +1,1010 @@
+---
+- name: Validate OpenVPN deployment inputs before mutation
+  block:
+    - name: Validate required OpenVPN variables
+      ansible.builtin.assert:
+        that:
+          - openvpn_endpoint | default("") | length > 0
+          - openvpn_vpn_cidr | default("") | length > 0
+          - openvpn_windows_cidr | default("") | length > 0
+          - openvpn_vpc_cidr | default("") | length > 0
+          - openvpn_profile_bucket | default("") | length > 0
+          - openvpn_client_days | default(0) | int >= 1
+          - openvpn_client_days | default(0) | int <= 365
+
+    - name: Copy OpenVPN input validator before mutation
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/validate-openvpn-inputs.py"
+        dest: /tmp/validate-openvpn-inputs.py
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Validate normalized network inputs before mutation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - /tmp/validate-openvpn-inputs.py
+          - --endpoint
+          - "{{ openvpn_endpoint }}"
+          - --vpn-cidr
+          - "{{ openvpn_vpn_cidr }}"
+          - --windows-cidr
+          - "{{ openvpn_windows_cidr }}"
+          - --vpc-cidr
+          - "{{ openvpn_vpc_cidr }}"
+          - --client-days
+          - "{{ openvpn_client_days | string }}"
+      changed_when: false
+  always:
+    - name: Remove OpenVPN input validator after preflight
+      ansible.builtin.file:
+        path: /tmp/validate-openvpn-inputs.py
+        state: absent
+
+- name: Install native OpenVPN packages
+  ansible.builtin.apt:
+    name:
+      - openvpn
+      - easy-rsa
+      - openssl
+      - ca-certificates
+      - curl
+      - unzip
+      - nftables
+      - iptables
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Check AWS CLI in /usr/local/bin
+  ansible.builtin.stat:
+    path: /usr/local/bin/aws
+  register: openvpn_aws_cli_local
+
+- name: Check AWS CLI in /usr/bin
+  ansible.builtin.stat:
+    path: /usr/bin/aws
+  register: openvpn_aws_cli_usr
+
+- name: Select existing AWS CLI candidate
+  ansible.builtin.set_fact:
+    openvpn_aws_cli_existing_path: >-
+      {{ '/usr/local/bin/aws' if openvpn_aws_cli_local.stat.exists else
+      ('/usr/bin/aws' if openvpn_aws_cli_usr.stat.exists else '') }}
+
+- name: Inspect selected AWS CLI version
+  ansible.builtin.command:
+    argv: ["{{ openvpn_aws_cli_existing_path }}", --version]
+  register: openvpn_aws_cli_existing_version
+  changed_when: false
+  failed_when: false
+  when: openvpn_aws_cli_existing_path | length > 0
+
+- name: Decide whether pinned AWS CLI installer is required
+  ansible.builtin.set_fact:
+    openvpn_aws_cli_installer_required: >-
+      {{ openvpn_aws_cli_existing_path == ''
+      or openvpn_aws_cli_existing_version.rc | default(1) != 0
+      or not (((openvpn_aws_cli_existing_version.stdout | default('')) ~
+      (openvpn_aws_cli_existing_version.stderr | default(''))) is search(
+      '(^|\s)aws-cli/' ~ (openvpn_aws_cli_version | regex_escape) ~ '(\s|$)')) }}
+
+- name: Install pinned AWS CLI v2
+  when: openvpn_aws_cli_installer_required | bool
+  block:
+    - name: Reject unsupported AWS CLI architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_architecture in ['x86_64', 'aarch64']
+        fail_msg: >-
+          Unsupported AWS CLI architecture {{ ansible_architecture }};
+          expected x86_64 or aarch64. No installer was run.
+
+    - name: Select pinned AWS CLI architecture
+      ansible.builtin.set_fact:
+        openvpn_aws_cli_arch: "{{ 'x86_64' if ansible_architecture == 'x86_64' else 'aarch64' }}"
+
+    - name: Create AWS CLI installer directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: openvpn-awscli
+      register: openvpn_aws_cli_temp
+
+    - name: Create isolated AWS CLI signature keyring
+      ansible.builtin.file:
+        path: "{{ openvpn_aws_cli_temp.path }}/gnupg"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Stage pinned AWS CLI signing key
+      ansible.builtin.copy:
+        src: aws-cli-public-key.asc
+        dest: "{{ openvpn_aws_cli_temp.path }}/aws-cli-public-key.asc"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Import pinned AWS CLI signing key
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --homedir
+          - "{{ openvpn_aws_cli_temp.path }}/gnupg"
+          - --batch
+          - --import
+          - "{{ openvpn_aws_cli_temp.path }}/aws-cli-public-key.asc"
+      changed_when: false
+
+    - name: Read pinned AWS CLI signer fingerprint
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --homedir
+          - "{{ openvpn_aws_cli_temp.path }}/gnupg"
+          - --batch
+          - --with-colons
+          - --fingerprint
+          - "{{ openvpn_aws_cli_signer_fingerprint }}"
+      register: openvpn_aws_cli_signer
+      changed_when: false
+
+    - name: Verify pinned AWS CLI signer fingerprint
+      ansible.builtin.assert:
+        that:
+          - >-
+            'fpr:::::::::' ~ openvpn_aws_cli_signer_fingerprint ~ ':'
+            in openvpn_aws_cli_signer.stdout
+        fail_msg: AWS CLI signing key fingerprint did not match the pinned AWS key.
+
+    - name: Download AWS CLI v2 installer
+      ansible.builtin.get_url:
+        url: >-
+          https://awscli.amazonaws.com/awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip
+        dest: "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip"
+        mode: "0600"
+
+    - name: Download AWS CLI v2 installer signature
+      ansible.builtin.get_url:
+        url: >-
+          https://awscli.amazonaws.com/awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip.sig
+        dest: "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip.sig"
+        mode: "0600"
+
+    - name: Verify AWS CLI v2 installer signature
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --homedir
+          - "{{ openvpn_aws_cli_temp.path }}/gnupg"
+          - --batch
+          - --verify
+          - "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip.sig"
+          - "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip"
+      changed_when: false
+
+    - name: Unpack AWS CLI v2 installer
+      ansible.builtin.unarchive:
+        src: "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip"
+        dest: "{{ openvpn_aws_cli_temp.path }}"
+        remote_src: true
+
+    - name: Run AWS CLI v2 installer
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_temp.path }}/aws/install"
+          - --bin-dir
+          - /usr/local/bin
+          - --install-dir
+          - /usr/local/aws-cli
+          - --update
+  always:
+    - name: Remove AWS CLI installer directory
+      ansible.builtin.file:
+        path: "{{ openvpn_aws_cli_temp.path }}"
+        state: absent
+      when: openvpn_aws_cli_temp is defined
+
+- name: Check installed AWS CLI in /usr/local/bin
+  ansible.builtin.stat:
+    path: /usr/local/bin/aws
+  register: openvpn_aws_cli_installed
+  when: openvpn_aws_cli_installer_required | bool
+
+- name: Read installed AWS CLI v2 version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/aws, --version]
+  register: openvpn_aws_cli_installed_version
+  changed_when: false
+  failed_when: false
+  when:
+    - openvpn_aws_cli_installer_required | bool
+    - openvpn_aws_cli_installed.stat.exists
+
+- name: Verify installed AWS CLI v2 version
+  ansible.builtin.assert:
+    that:
+      - openvpn_aws_cli_installed.stat.exists
+      - openvpn_aws_cli_installed_version.rc == 0
+      - >-
+        ((openvpn_aws_cli_installed_version.stdout | default('')) ~
+        (openvpn_aws_cli_installed_version.stderr | default(''))) is search(
+        '(^|\s)aws-cli/' ~ (openvpn_aws_cli_version | regex_escape) ~ '(\s|$)')
+    fail_msg: >-
+      AWS CLI must be the pinned v2 release {{ openvpn_aws_cli_version }} at
+      /usr/local/bin/aws.
+  when: openvpn_aws_cli_installer_required | bool
+
+- name: Select verified AWS CLI path
+  ansible.builtin.set_fact:
+    openvpn_aws_cli_path: >-
+      {{ '/usr/local/bin/aws' if openvpn_aws_cli_installer_required else
+      openvpn_aws_cli_existing_path }}
+
+- name: Verify temporary profile bucket permissions with sentinel data
+  when: openvpn_verify_s3 | bool
+  no_log: true
+  block:
+    - name: Create temporary OpenVPN profile bucket sentinel
+      ansible.builtin.copy:
+        dest: /tmp/openvpn-course-s3-sentinel
+        content: "openvpn-course-sentinel-{{ ansible_date_time.epoch }}"
+        mode: "0600"
+
+    - name: Upload temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_path }}"
+          - s3
+          - cp
+          - /tmp/openvpn-course-s3-sentinel
+          - "s3://{{ openvpn_profile_bucket }}/profiles/sentinel-{{ ansible_date_time.epoch }}"
+          - --only-show-errors
+          - --region
+          - "{{ openvpn_aws_region }}"
+      changed_when: true
+
+    - name: Presign temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_path }}"
+          - s3
+          - presign
+          - "s3://{{ openvpn_profile_bucket }}/profiles/sentinel-{{ ansible_date_time.epoch }}"
+          - --expires-in
+          - "600"
+          - --region
+          - "{{ openvpn_aws_region }}"
+      register: openvpn_sentinel_url
+      changed_when: false
+
+    - name: Download temporary OpenVPN profile bucket sentinel
+      ansible.builtin.get_url:
+        url: "{{ openvpn_sentinel_url.stdout }}"
+        dest: /tmp/openvpn-course-s3-sentinel.downloaded
+        mode: "0600"
+
+    - name: Compare temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - cmp
+          - --silent
+          - /tmp/openvpn-course-s3-sentinel
+          - /tmp/openvpn-course-s3-sentinel.downloaded
+      changed_when: false
+  always:
+    - name: Delete temporary OpenVPN profile bucket sentinel
+      ansible.builtin.command:
+        argv:
+          - "{{ openvpn_aws_cli_path }}"
+          - s3
+          - rm
+          - "s3://{{ openvpn_profile_bucket }}/profiles/sentinel-{{ ansible_date_time.epoch }}"
+          - --only-show-errors
+          - --region
+          - "{{ openvpn_aws_region }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Remove temporary OpenVPN profile bucket sentinel files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/openvpn-course-s3-sentinel
+        - /tmp/openvpn-course-s3-sentinel.downloaded
+
+- name: Create OpenVPN root-only directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ openvpn_pki_dir }}"
+      mode: "0700"
+    - path: "{{ openvpn_profile_dir }}"
+      mode: "0700"
+    - path: "{{ openvpn_server_dir }}"
+      mode: "0700"
+    - path: "{{ openvpn_status_path | dirname }}"
+      mode: "0755"
+    - path: /usr/local/libexec
+      mode: "0755"
+
+- name: Create root-owned OpenVPN mutation lock
+  ansible.builtin.file:
+    path: "{{ openvpn_mutation_lock_path }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
+
+- name: Copy Easy-RSA tree into OpenVPN PKI directory
+  ansible.builtin.copy:
+    src: /usr/share/easy-rsa/
+    dest: "{{ openvpn_pki_dir }}/"
+    remote_src: true
+    owner: root
+    group: root
+    mode: preserve
+
+- name: Lock OpenVPN PKI directory permissions
+  ansible.builtin.file:
+    path: "{{ openvpn_pki_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Initialize Easy-RSA PKI once
+  ansible.builtin.command:
+    argv: ["{{ openvpn_pki_dir }}/easyrsa", init-pki]
+    chdir: "{{ openvpn_pki_dir }}"
+    creates: "{{ openvpn_pki_dir }}/pki/index.txt"
+  environment:
+    EASYRSA_BATCH: "1"
+    EASYRSA_ALGO: rsa
+    EASYRSA_KEY_SIZE: "3072"
+
+- name: Build private CA once
+  ansible.builtin.command:
+    argv: ["{{ openvpn_pki_dir }}/easyrsa", build-ca, nopass]
+    chdir: "{{ openvpn_pki_dir }}"
+    creates: "{{ openvpn_pki_dir }}/pki/ca.crt"
+  environment:
+    EASYRSA_BATCH: "1"
+    EASYRSA_ALGO: rsa
+    EASYRSA_KEY_SIZE: "3072"
+    EASYRSA_REQ_CN: Course OpenVPN CA
+
+- name: Build server certificate once
+  ansible.builtin.command:
+    argv:
+      - "{{ openvpn_pki_dir }}/easyrsa"
+      - build-server-full
+      - "{{ openvpn_server_cn }}"
+      - nopass
+    chdir: "{{ openvpn_pki_dir }}"
+    creates: "{{ openvpn_pki_dir }}/pki/issued/{{ openvpn_server_cn }}.crt"
+  environment:
+    EASYRSA_BATCH: "1"
+    EASYRSA_ALGO: rsa
+    EASYRSA_KEY_SIZE: "3072"
+
+- name: Build initial shared client certificate once
+  ansible.builtin.command:
+    argv:
+      - "{{ openvpn_pki_dir }}/easyrsa"
+      - build-client-full
+      - "{{ openvpn_initial_client_cn }}"
+      - nopass
+    chdir: "{{ openvpn_pki_dir }}"
+    creates: "{{ openvpn_pki_dir }}/pki/issued/{{ openvpn_initial_client_cn }}.crt"
+  environment:
+    EASYRSA_BATCH: "1"
+    EASYRSA_ALGO: rsa
+    EASYRSA_KEY_SIZE: "3072"
+    EASYRSA_CERT_EXPIRE: "{{ openvpn_client_days | string }}"
+
+- name: Generate initial certificate revocation list once
+  ansible.builtin.command:
+    argv: ["{{ openvpn_pki_dir }}/easyrsa", gen-crl]
+    chdir: "{{ openvpn_pki_dir }}"
+    creates: "{{ openvpn_pki_dir }}/pki/crl.pem"
+  environment:
+    EASYRSA_BATCH: "1"
+
+- name: Generate tls-crypt key once
+  ansible.builtin.command:
+    argv:
+      - openvpn
+      - --genkey
+      - secret
+      - "{{ openvpn_pki_dir }}/tls-crypt.key"
+    creates: "{{ openvpn_pki_dir }}/tls-crypt.key"
+
+- name: Lock tls-crypt key permissions
+  ansible.builtin.file:
+    path: "{{ openvpn_pki_dir }}/tls-crypt.key"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check existing active client CN
+  ansible.builtin.stat:
+    path: "{{ openvpn_active_client_cn_file }}"
+    follow: false
+  register: openvpn_active_client_cn_stat
+
+- name: Refuse symlinked active client CN state
+  ansible.builtin.assert:
+    that:
+      - not openvpn_active_client_cn_stat.stat.islnk
+  when: openvpn_active_client_cn_stat.stat.exists
+
+- name: Read existing active client CN
+  ansible.builtin.slurp:
+    src: "{{ openvpn_active_client_cn_file }}"
+  register: openvpn_existing_active_client_cn
+  when: openvpn_active_client_cn_stat.stat.exists
+  no_log: true
+
+- name: Resolve active client CN
+  ansible.builtin.set_fact:
+    openvpn_active_client_cn: >-
+      {{ (openvpn_existing_active_client_cn.content | b64decode | trim)
+      if openvpn_active_client_cn_stat.stat.exists else openvpn_initial_client_cn }}
+
+- name: Validate active client CN
+  ansible.builtin.assert:
+    that:
+      - openvpn_active_client_cn is match("^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+
+- name: Store initial active client CN once
+  ansible.builtin.copy:
+    dest: "{{ openvpn_active_client_cn_file }}"
+    content: "{{ openvpn_active_client_cn }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not openvpn_active_client_cn_stat.stat.exists
+
+- name: Lock active client CN permissions
+  ansible.builtin.file:
+    path: "{{ openvpn_active_client_cn_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check recorded shared profile key
+  ansible.builtin.stat:
+    path: "{{ openvpn_last_shared_key_file }}"
+    follow: false
+  register: openvpn_last_shared_key_stat
+
+- name: Refuse symlinked shared profile key state
+  ansible.builtin.assert:
+    that:
+      - not openvpn_last_shared_key_stat.stat.islnk
+  when: openvpn_last_shared_key_stat.stat.exists
+
+- name: Create recorded shared profile key file once
+  ansible.builtin.copy:
+    dest: "{{ openvpn_last_shared_key_file }}"
+    content: ""
+    owner: root
+    group: root
+    mode: "0600"
+  when: not openvpn_last_shared_key_stat.stat.exists
+
+- name: Lock recorded shared profile key permissions
+  ansible.builtin.file:
+    path: "{{ openvpn_last_shared_key_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install OpenVPN profile renderer in PKI
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/openvpn-course-render-profile"
+    dest: "{{ openvpn_pki_dir }}/render-profile"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install OpenVPN course operator
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/openvpn-course"
+    dest: /usr/local/sbin/openvpn-course
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install OpenVPN course firewall helper
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/openvpn-course-firewall"
+    dest: /usr/local/libexec/openvpn-course-firewall
+    owner: root
+    group: root
+    mode: "0750"
+  notify: Reload course firewall
+
+- name: Install OpenVPN course firewall unit
+  ansible.builtin.template:
+    src: openvpn-course-firewall.service.j2
+    dest: /etc/systemd/system/openvpn-course-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload course firewall
+
+- name: Render staged OpenVPN server configuration
+  ansible.builtin.template:
+    src: course.conf.j2
+    dest: "{{ openvpn_server_config_path }}.staged"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render staged OpenVPN operator environment
+  ansible.builtin.template:
+    src: openvpn-course.env.j2
+    dest: /etc/openvpn/openvpn-course.env.staged
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render staged course firewall rules
+  ansible.builtin.template:
+    src: course-firewall.nft.j2
+    dest: /etc/openvpn/course-firewall.nft.staged
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render staged active client profile
+  ansible.builtin.command:
+    argv:
+      - "{{ openvpn_pki_dir }}/render-profile"
+      - "{{ openvpn_active_client_cn }}"
+  environment:
+    PKI_DIR: "{{ openvpn_pki_dir }}"
+    ENDPOINT: "{{ openvpn_endpoint }}"
+    OPENVPN_PORT: "{{ openvpn_port | string }}"
+    OPENVPN_PROTOCOL: "{{ openvpn_protocol }}"
+  register: openvpn_rendered_profile
+  changed_when: false
+  no_log: true
+
+- name: Write staged active client profile
+  ansible.builtin.copy:
+    dest: "{{ openvpn_profile_path }}.staged"
+    content: "{{ openvpn_rendered_profile.stdout }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Define OpenVPN active file transaction set
+  ansible.builtin.set_fact:
+    openvpn_active_files:
+      - path: /etc/openvpn/server/ca.crt
+        source: "{{ openvpn_pki_dir }}/pki/ca.crt"
+        mode: "0644"
+        secret: false
+        install_before_validation: true
+      - path: /etc/openvpn/server/course-server.crt
+        source: "{{ openvpn_pki_dir }}/pki/issued/{{ openvpn_server_cn }}.crt"
+        mode: "0644"
+        secret: false
+        install_before_validation: true
+      - path: /etc/openvpn/server/course-server.key
+        source: "{{ openvpn_pki_dir }}/pki/private/{{ openvpn_server_cn }}.key"
+        mode: "0600"
+        secret: true
+        install_before_validation: true
+      - path: /etc/openvpn/server/crl.pem
+        source: "{{ openvpn_pki_dir }}/pki/crl.pem"
+        mode: "0644"
+        secret: false
+        install_before_validation: true
+      - path: /etc/openvpn/server/tls-crypt.key
+        source: "{{ openvpn_pki_dir }}/tls-crypt.key"
+        mode: "0600"
+        secret: true
+        install_before_validation: true
+      - path: /etc/openvpn/server/course.conf
+        source: /etc/openvpn/server/course.conf.staged
+        mode: "0600"
+        secret: false
+        install_before_validation: false
+      - path: "{{ openvpn_profile_path }}"
+        source: "{{ openvpn_profile_path }}.staged"
+        mode: "0600"
+        secret: true
+        install_before_validation: false
+      - path: /etc/openvpn/openvpn-course.env
+        source: /etc/openvpn/openvpn-course.env.staged
+        mode: "0600"
+        secret: false
+        install_before_validation: false
+        service: firewall
+      - path: /etc/openvpn/course-firewall.nft
+        source: /etc/openvpn/course-firewall.nft.staged
+        mode: "0600"
+        secret: false
+        install_before_validation: false
+        service: firewall
+
+- name: Remove stale OpenVPN activation backups
+  ansible.builtin.file:
+    path: "{{ item.path }}.previous"
+    state: absent
+  loop: "{{ openvpn_active_files }}"
+  no_log: "{{ item.secret }}"
+
+- name: Check existing active OpenVPN files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ openvpn_active_files }}"
+  register: openvpn_active_file_stats
+  no_log: "{{ item.secret }}"
+
+- name: Refuse symlinked active OpenVPN files
+  ansible.builtin.assert:
+    that:
+      - not item.stat.islnk
+  loop: "{{ openvpn_active_file_stats.results }}"
+  when: item.stat.exists
+  no_log: "{{ item.item.secret }}"
+
+- name: Backup existing active OpenVPN files
+  ansible.builtin.copy:
+    src: "{{ item.item.path }}"
+    dest: "{{ item.item.path }}.previous"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "{{ item.item.mode }}"
+  loop: "{{ openvpn_active_file_stats.results }}"
+  when: item.stat.exists
+  no_log: "{{ item.item.secret }}"
+
+- name: Capture prior OpenVPN active state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, openvpn-server@course]
+  register: openvpn_prior_active_state
+  changed_when: false
+  failed_when: false
+
+- name: Capture prior OpenVPN enabled state
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, openvpn-server@course]
+  register: openvpn_prior_enabled_state
+  changed_when: false
+  failed_when: false
+
+- name: Capture prior course firewall active state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, openvpn-course-firewall]
+  register: openvpn_prior_firewall_active_state
+  changed_when: false
+  failed_when: false
+
+- name: Capture prior course firewall enabled state
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, openvpn-course-firewall]
+  register: openvpn_prior_firewall_enabled_state
+  changed_when: false
+  failed_when: false
+
+- name: Capture prior IP forwarding runtime value
+  ansible.builtin.command:
+    argv: [sysctl, -n, net.ipv4.ip_forward]
+  register: openvpn_prior_ip_forward_value
+  changed_when: false
+  failed_when: false
+
+- name: Check prior IP forwarding sysctl file
+  ansible.builtin.stat:
+    path: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+    follow: false
+  register: openvpn_prior_ip_forward_file_stat
+
+- name: Refuse symlinked IP forwarding sysctl file
+  ansible.builtin.assert:
+    that:
+      - not openvpn_prior_ip_forward_file_stat.stat.islnk
+  when: openvpn_prior_ip_forward_file_stat.stat.exists
+
+- name: Read prior IP forwarding sysctl file
+  ansible.builtin.slurp:
+    src: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+  register: openvpn_prior_ip_forward_file_content
+  when: openvpn_prior_ip_forward_file_stat.stat.exists
+
+- name: Resolve previous active OpenVPN file presence
+  ansible.builtin.set_fact:
+    openvpn_had_previous_active_files: >-
+      {{ openvpn_active_file_stats.results | selectattr('stat.exists') | list | length > 0 }}
+
+- name: Activate OpenVPN artifacts transactionally
+  block:
+    - name: Install server material before validation
+      ansible.builtin.copy:
+        src: "{{ item.source }}"
+        dest: "{{ item.path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop: "{{ openvpn_active_files }}"
+      when:
+        - item.install_before_validation
+        - item.service | default('openvpn') == 'openvpn'
+      no_log: "{{ item.secret }}"
+      notify: Reload course OpenVPN
+
+    - name: Verify staged server certificate
+      ansible.builtin.command:
+        argv: [openssl, verify, -CAfile, /etc/openvpn/server/ca.crt, /etc/openvpn/server/course-server.crt]
+      changed_when: false
+
+    - name: Verify staged client certificate
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - verify
+          - -CAfile
+          - "{{ openvpn_pki_dir }}/pki/ca.crt"
+          - "{{ openvpn_pki_dir }}/pki/issued/{{ openvpn_active_client_cn }}.crt"
+      changed_when: false
+
+    - name: Validate rendered profile contains required blocks
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fq
+          - "{{ item }}"
+          - "{{ openvpn_profile_path }}.staged"
+      loop:
+        - <ca>
+        - <cert>
+        - <key>
+        - <tls-crypt>
+      changed_when: false
+      no_log: true
+
+    - name: Parse and crypto-test staged OpenVPN configuration
+      ansible.builtin.command:
+        argv: [openvpn, --config, /etc/openvpn/server/course.conf.staged, --test-crypto]
+      changed_when: false
+      no_log: true
+
+    - name: Validate staged course firewall rules
+      ansible.builtin.command:
+        argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]
+      changed_when: false
+
+    - name: Install validated active OpenVPN files
+      ansible.builtin.copy:
+        src: "{{ item.source }}"
+        dest: "{{ item.path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop: "{{ openvpn_active_files }}"
+      when:
+        - not item.install_before_validation
+        - item.service | default('openvpn') == 'openvpn'
+      no_log: "{{ item.secret }}"
+      notify: Reload course OpenVPN
+
+    - name: Install validated active course firewall rules
+      ansible.builtin.copy:
+        src: "{{ item.source }}"
+        dest: "{{ item.path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop: "{{ openvpn_active_files }}"
+      when: item.service | default('openvpn') == 'firewall'
+      notify: Reload course firewall
+
+    - name: Preflight Docker user firewall integration
+      ansible.builtin.command:
+        argv: [/usr/local/libexec/openvpn-course-firewall, preflight]
+      changed_when: false
+
+    - name: Persist OpenVPN course IP forwarding
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        content: "net.ipv4.ip_forward=1\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Apply OpenVPN course IP forwarding
+      ansible.builtin.command:
+        argv: [sysctl, -w, net.ipv4.ip_forward=1]
+      changed_when: false
+
+    - name: Enable and start course firewall
+      ansible.builtin.systemd_service:
+        name: openvpn-course-firewall
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Reload course firewall before OpenVPN
+      ansible.builtin.systemd_service:
+        name: openvpn-course-firewall
+        state: reloaded
+        daemon_reload: true
+
+    - name: Enable and start course OpenVPN
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        enabled: true
+        state: started
+
+    - name: Flush OpenVPN activation handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify course OpenVPN service is active
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, openvpn-server@course]
+      changed_when: false
+  rescue:
+    - name: Restore previous active OpenVPN files
+      ansible.builtin.copy:
+        src: "{{ item.item.path }}.previous"
+        dest: "{{ item.item.path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "{{ item.item.mode }}"
+      loop: "{{ openvpn_active_file_stats.results }}"
+      when: item.stat.exists
+      no_log: "{{ item.item.secret }}"
+
+    - name: Remove active OpenVPN files created by failed first deploy
+      ansible.builtin.file:
+        path: "{{ item.item.path }}"
+        state: absent
+      loop: "{{ openvpn_active_file_stats.results }}"
+      when: not item.stat.exists
+      no_log: "{{ item.item.secret }}"
+
+    - name: Restore previous IP forwarding sysctl file
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        content: "{{ openvpn_prior_ip_forward_file_content.content | b64decode }}"
+        owner: "{{ openvpn_prior_ip_forward_file_stat.stat.uid }}"
+        group: "{{ openvpn_prior_ip_forward_file_stat.stat.gid }}"
+        mode: "{{ openvpn_prior_ip_forward_file_stat.stat.mode }}"
+      failed_when: false
+      when: openvpn_prior_ip_forward_file_stat.stat.exists
+
+    - name: Remove IP forwarding sysctl file created by failed deploy
+      ansible.builtin.file:
+        path: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        state: absent
+      failed_when: false
+      when: not openvpn_prior_ip_forward_file_stat.stat.exists
+
+    - name: Restore prior IP forwarding runtime value
+      ansible.builtin.command:
+        argv:
+          - sysctl
+          - -w
+          - "net.ipv4.ip_forward={{ openvpn_prior_ip_forward_value.stdout | trim }}"
+      changed_when: false
+      failed_when: false
+      when:
+        - openvpn_prior_ip_forward_value.rc == 0
+        - openvpn_prior_ip_forward_value.stdout | trim in ['0', '1']
+
+    - name: Restore prior OpenVPN enabled state
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        enabled: "{{ openvpn_prior_enabled_state.stdout == 'enabled' }}"
+      failed_when: false
+      when: openvpn_prior_enabled_state.stdout in ['enabled', 'disabled']
+
+    - name: Restore prior course firewall enabled state
+      ansible.builtin.systemd_service:
+        name: openvpn-course-firewall
+        enabled: "{{ openvpn_prior_firewall_enabled_state.stdout == 'enabled' }}"
+        daemon_reload: true
+      failed_when: false
+      when: >-
+        openvpn_prior_firewall_enabled_state.stdout in ['enabled', 'disabled']
+        or openvpn_prior_firewall_enabled_state.rc != 0
+
+    - name: Reload active course firewall after rollback
+      ansible.builtin.systemd_service:
+        name: openvpn-course-firewall
+        state: reloaded
+        daemon_reload: true
+      failed_when: false
+      when: openvpn_prior_firewall_active_state.stdout == 'active'
+
+    - name: Stop course firewall after rollback
+      ansible.builtin.systemd_service:
+        name: openvpn-course-firewall
+        state: stopped
+        daemon_reload: true
+      failed_when: false
+      when: openvpn_prior_firewall_active_state.stdout != 'active'
+
+    - name: Restore active OpenVPN service after rollback
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: started
+      failed_when: false
+      when:
+        - openvpn_had_previous_active_files | bool
+        - openvpn_prior_active_state.stdout == 'active'
+
+    - name: Reload active OpenVPN service after rollback
+      ansible.builtin.command:
+        argv: [systemctl, reload, openvpn-server@course]
+      register: openvpn_rollback_reload
+      changed_when: true
+      failed_when: false
+      when:
+        - openvpn_had_previous_active_files | bool
+        - openvpn_prior_active_state.stdout == 'active'
+
+    - name: Restart active OpenVPN service after rollback when reload is unsupported
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: restarted
+      failed_when: false
+      when:
+        - openvpn_had_previous_active_files | bool
+        - openvpn_prior_active_state.stdout == 'active'
+        - openvpn_rollback_reload.rc != 0
+        - >-
+          'Job type reload is not applicable' in (openvpn_rollback_reload.stderr | default(''))
+          or 'not supported' in (openvpn_rollback_reload.stderr | default(''))
+
+    - name: Stop OpenVPN service after rollback
+      ansible.builtin.systemd_service:
+        name: openvpn-server@course
+        state: stopped
+      failed_when: false
+      when:
+        - (not (openvpn_had_previous_active_files | bool)) or openvpn_prior_active_state.stdout != 'active'
+
+    - name: Fail after OpenVPN activation rollback
+      ansible.builtin.fail:
+        msg: OpenVPN activation failed; previous configuration restored
+
+- name: Remove staged OpenVPN activation files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/openvpn/server/course.conf.staged
+    - /etc/openvpn/openvpn-course.env.staged
+    - /etc/openvpn/course-firewall.nft.staged
+    - "{{ openvpn_profile_path }}.staged"
+
+- name: Remove OpenVPN activation backups after success
+  ansible.builtin.file:
+    path: "{{ item.path }}.previous"
+    state: absent
+  loop: "{{ openvpn_active_files }}"
+  no_log: "{{ item.secret }}"
