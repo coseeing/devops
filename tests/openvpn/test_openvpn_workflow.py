@@ -93,3 +93,45 @@ def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
     ):
         assert required in text
     assert "does not modify Security Groups" in text
+
+
+def doc_section(text: str, heading: str) -> str:
+    start = text.index(f"## {heading}")
+    end = text.find("\n## ", start + len(heading) + 3)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def test_operations_doc_explains_share_cleanup_failure_and_retry() -> None:
+    text = (ROOT / "docs/openvpn-course-operations.md").read_text()
+    section = doc_section(text, "Share a Profile for 10 Minutes")
+    assert "before uploading or presigning the new one" in section
+    assert "the previous URL/object may already be unavailable" in section
+    assert "rerun `sudo openvpn-course share`" in section
+    assert "S3 lifecycle expiration" in section
+    assert "on the next successful share" not in section
+
+
+def test_operations_doc_separates_user_instance_lookup_from_admin_listing() -> None:
+    text = (ROOT / "docs/openvpn-course-operations.md").read_text()
+    section = doc_section(text, "Find the Windows Private IPv4 in VMS Portal")
+    assert "normal user" in section
+    assert "exact EC2 Instance ID" in section
+    assert "lookup form" in section
+    assert "admin" in section
+    assert "browse/list records" in section
+
+
+def test_operations_doc_stops_and_disables_openvpn_before_firewall_removal() -> None:
+    text = (ROOT / "docs/openvpn-course-operations.md").read_text()
+    section = doc_section(text, "Recover or Remove Only OpenVPN Components")
+    section = section.split("Before removing the deployment", 1)[1]
+    commands = (
+        "sudo systemctl stop openvpn-server@course",
+        "sudo systemctl disable openvpn-server@course",
+        "sudo systemctl stop openvpn-course-firewall",
+        "sudo systemctl disable openvpn-course-firewall",
+        "sudo openvpn-course-firewall remove",
+    )
+    positions = [section.index(command) for command in commands]
+    assert positions == sorted(positions)
+    assert "never remove the firewall while the VPN service runs" in section

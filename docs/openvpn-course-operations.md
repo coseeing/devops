@@ -118,9 +118,13 @@ temporary signing credentials expire first. Send the URL only through a
 trusted channel and treat anyone who receives it as able to download the
 shared profile during its valid period.
 
-The previous transient object is deleted on the next successful share when
-possible. S3 lifecycle expiration makes abandoned objects eligible for
-deletion after one day; physical deletion is asynchronous. URL expiration
+The command first best-effort deletes the previously recorded transient object
+before uploading or presigning the new one. If that cleanup succeeds and a
+later upload or presign fails, the previous URL/object may already be unavailable;
+rerun `sudo openvpn-course share` to create a new share. If
+cleanup or a later operation fails, S3 lifecycle expiration remains the
+fallback for abandoned objects. Lifecycle expiration makes objects eligible
+for deletion after one day; physical deletion is asynchronous. URL expiration
 blocks new or restarted downloads, but does not invalidate an `.ovpn` file
 already downloaded to a Mac. Use `rotate` to revoke the certificate in a
 downloaded profile.
@@ -178,11 +182,13 @@ compression setting. Only the configured Windows subnet enters the tunnel.
 
 ## Find the Windows Private IPv4 in VMS Portal
 
-Sign in to VMS Portal, open the managed Windows VM record, and copy its
-**Private IPv4** address. Use the exact private address for RDP; do not use the
-public address when testing VPN-only access. Confirm that the VM is running and
-that the Windows Security Group allows TCP 3389 from the Linux host private
-IPv4 `/32`.
+For a normal user, enter the exact EC2 Instance ID in the VMS Portal
+lookup form. The lookup result provides the VM's **Private IPv4**; use that
+exact address for RDP. An admin may browse/list records and copy the **Private
+IPv4** from the managed Windows VM record. Neither path should use the public
+address when testing VPN-only access. Confirm that the VM is running and that
+the Windows Security Group allows TCP 3389 from the Linux host private IPv4
+`/32`.
 
 ## Connect with Microsoft Remote Desktop
 
@@ -281,8 +287,15 @@ Before removing the deployment, save any incident evidence and confirm that no
 participant needs the service. Stop and disable only the two OpenVPN units:
 
 ```bash
-sudo systemctl disable --now openvpn-server@course openvpn-course-firewall
+sudo systemctl stop openvpn-server@course
+sudo systemctl disable openvpn-server@course
+sudo systemctl stop openvpn-course-firewall
+sudo systemctl disable openvpn-course-firewall
+sudo openvpn-course-firewall remove
 ```
+
+The OpenVPN service must be stopped and disabled before stopping, disabling, or
+removing the firewall; never remove the firewall while the VPN service runs.
 
 Do not remove `/etc/openvpn/course-pki`, `/var/lib/openvpn-course`, the server
 configuration, or the S3 distribution stack as an ad-hoc recovery step. Those
