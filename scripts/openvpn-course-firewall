@@ -56,7 +56,7 @@ load_networks() {
 }
 
 preflight_docker_user() {
-  local version
+  local version forward_rules first_forward_rule
   if ! version=$("$IPTABLES" --version 2>&1); then
     die "DOCKER-USER integration unavailable: iptables-nft is not installed"
     return 1
@@ -71,6 +71,15 @@ preflight_docker_user() {
   fi
   if ! iptables_command -C FORWARD -j "$DOCKER_USER_CHAIN" >/dev/null 2>&1; then
     die "DOCKER-USER integration unavailable: FORWARD does not jump to Docker's DOCKER-USER chain"
+    return 1
+  fi
+  if ! forward_rules=$(iptables_command -S FORWARD); then
+    die "DOCKER-USER integration unavailable: could not inspect Docker's FORWARD chain"
+    return 1
+  fi
+  first_forward_rule=$(printf '%s\n' "$forward_rules" | awk '$1 == "-A" && $2 == "FORWARD" { print; exit }')
+  if [[ "$first_forward_rule" != "-A FORWARD -j $DOCKER_USER_CHAIN" ]]; then
+    die "DOCKER-USER integration unavailable: FORWARD must begin with Docker's DOCKER-USER jump"
     return 1
   fi
 }
@@ -266,7 +275,7 @@ remove_rules() {
     remove_chain "$COURSE_CHAIN_B" || true
     remove_chain "$COURSE_GUARD_CHAIN" || true
   else
-    printf 'warning: DOCKER-USER unavailable; only course NAT cleanup was attempted\n' >&2
+    printf 'warning: DOCKER-USER unavailable; course input, NAT, and legacy table cleanup was attempted\n' >&2
   fi
   remove_tables
 }

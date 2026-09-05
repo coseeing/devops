@@ -90,6 +90,9 @@ def test_workflow_remote_check_verifies_active_docker_course_firewall_path() -> 
     assert "iptables --version" in remote_run
     assert "nf_tables" in remote_run
     assert "iptables -w 5 -t filter -C FORWARD -j DOCKER-USER" in remote_run
+    assert "iptables -w 5 -t filter -S FORWARD" in remote_run
+    assert "first_forward_rule" in remote_run
+    assert "-A FORWARD -j DOCKER-USER" in remote_run
     assert "iptables -w 5 -t filter -S DOCKER-USER" in remote_run
     assert "openvpn-course-forward" in remote_run
     assert "OPENVPN-COURSE-A" in remote_run

@@ -494,8 +494,15 @@ def write_fake_iptables(tmp_path: Path, mock_bin: Path) -> Path:
         "fi\n"
         "if [[ \"$*\" == '-w 5 -t filter -S DOCKER-USER' ]]; then\n"
         "  [[ \"${FAKE_IPTABLES_NO_DOCKER_USER:-0}\" == 1 ]] && exit 1\n"
-        "  printf 'model: FORWARD -> DOCKER-USER -> default DROP\\n' >>\"${FAKE_IPTABLES_LOG:?}\"\n"
-        "  printf '%s\\n' '-N DOCKER-USER' '-A FORWARD -j DOCKER-USER' '-A FORWARD -j DROP'\n"
+        "  printf '%s\\n' '-N DOCKER-USER'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == '-w 5 -t filter -S FORWARD' ]]; then\n"
+        "  if [[ \"${FAKE_IPTABLES_FORWARD_DROP_FIRST:-0}\" == 1 ]]; then\n"
+        "    printf '%s\\n' '-P FORWARD DROP' '-A FORWARD -j DROP' '-A FORWARD -j DOCKER-USER'\n"
+        "  else\n"
+        "    printf '%s\\n' '-P FORWARD DROP' '-A FORWARD -j DOCKER-USER' '-A FORWARD -j DROP'\n"
+        "  fi\n"
         "  exit 0\n"
         "fi\n"
         "if [[ \"$*\" == '-w 5 -t filter -C FORWARD -j DOCKER-USER' ]]; then\n"
@@ -566,7 +573,7 @@ def test_firewall_helper_apply_and_reload_replace_scoped_tables_atomically(
         assert (batch_dir / "checked-batch.nft").read_text() == expected_batch
         assert (batch_dir / "loaded-batch.nft").read_text() == expected_batch
         iptables_calls = (tmp_path / command / "iptables-calls.log").read_text()
-        assert "model: FORWARD -> DOCKER-USER -> default DROP" in iptables_calls
+        assert "-S FORWARD" in iptables_calls
         assert "-I DOCKER-USER 1 -m comment --comment openvpn-course-forward -j OPENVPN-COURSE-GUARD" in iptables_calls
         assert "-A OPENVPN-COURSE-A -o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" in iptables_calls
         assert "-A OPENVPN-COURSE-A -o tun-course -j DROP" in iptables_calls
@@ -617,6 +624,22 @@ def test_firewall_helper_remove_succeeds_when_scoped_tables_are_absent(
     ]
 
 
+def test_firewall_helper_remove_warns_that_all_scoped_tables_were_attempted(
+    tmp_path: Path,
+) -> None:
+    env, _rules, _log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_NO_DOCKER_USER="1"
+    )
+
+    result = run_firewall(env, "remove")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "DOCKER-USER unavailable; course input, NAT, and legacy table cleanup was attempted"
+        in result.stderr
+    )
+
+
 def test_firewall_helper_validation_failure_does_not_remove_or_load_tables(
     tmp_path: Path,
 ) -> None:
@@ -665,6 +688,32 @@ def test_firewall_helper_fails_closed_before_nat_when_forward_is_not_linked_to_d
     assert "FORWARD does not jump to Docker's DOCKER-USER chain" in result.stderr
     assert log.read_text() == ""
     assert "-I DOCKER-USER" not in (tmp_path / "iptables-calls.log").read_text()
+
+
+def test_firewall_helper_fails_closed_before_nat_when_docker_user_is_not_first_forward_rule(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_FORWARD_DROP_FIRST="1"
+    )
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert "FORWARD must begin with Docker's DOCKER-USER jump" in result.stderr
+    assert log.read_text() == ""
+    assert "-I DOCKER-USER" not in (tmp_path / "iptables-calls.log").read_text()
+
+
+def test_firewall_helper_preflight_accepts_docker_user_as_the_first_forward_rule(
+    tmp_path: Path,
+) -> None:
+    env, _rules, _log, _batch_dir = firewall_env(tmp_path)
+
+    result = run_firewall(env, "preflight")
+
+    assert result.returncode == 0, result.stderr
+    assert "-S FORWARD" in (tmp_path / "iptables-calls.log").read_text()
 
 
 def test_firewall_helper_load_failure_has_no_standalone_delete_before_failure(
@@ -756,15 +805,56 @@ def test_optional_namespace_integration_uses_docker_user_before_default_forward_
             check=True,
         )
         subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-A", "FORWARD", "-j", "DROP"],
+            check=True,
+        )
+        subprocess.run(
             [
                 "ip",
                 "netns",
                 "exec",
                 namespace,
                 "iptables",
-                "-I",
+                "-A",
                 "FORWARD",
-                "1",
+                "-j",
+                "DOCKER-USER",
+            ],
+            check=True,
+        )
+        bad_preflight = subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "env",
+                f"OPENVPN_COURSE_FIREWALL_RULES={rules}",
+                "OPENVPN_COURSE_FIREWALL_VPN_CIDR=10.250.0.0/24",
+                "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR=10.0.8.0/24",
+                "bash",
+                str(FIREWALL),
+                "preflight",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert bad_preflight.returncode != 0
+        assert "FORWARD must begin with Docker's DOCKER-USER jump" in bad_preflight.stderr
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-F", "FORWARD"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "iptables",
+                "-A",
+                "FORWARD",
                 "-j",
                 "DOCKER-USER",
             ],

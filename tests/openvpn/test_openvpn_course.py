@@ -10,6 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/openvpn-course"
+RENDERER = ROOT / "scripts/openvpn-course-render-profile"
 
 
 @pytest.fixture
@@ -377,6 +378,38 @@ def test_rotate_builds_and_validates_before_revoking(
         "course-shared-"
     )
     assert configured_path(course_env, "SERVER_CRL_PATH").read_text() == "new crl\n"
+
+
+def test_rotate_passes_the_sourced_connection_environment_to_the_real_renderer(
+    course_env, mock_commands
+) -> None:
+    pki = configured_path(course_env, "PKI_DIR")
+    (pki / "tls-crypt.key").write_text("TLS CRYPT KEY\n")
+    renderer = pki / "render-profile"
+    renderer.unlink()
+    renderer.symlink_to(RENDERER)
+    environment_file = Path(course_env["OPENVPN_COURSE_ENV_FILE"])
+    environment_file.write_text(
+        environment_file.read_text()
+        + "OPENVPN_PORT=443\nOPENVPN_PROTOCOL=tcp\n"
+    )
+
+    result = run_course(
+        course_env,
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    rendered_profile = configured_path(course_env, "PROFILE_PATH").read_text()
+    assert "proto tcp\n" in rendered_profile
+    assert "remote vpn.coseeing.org 443\n" in rendered_profile
+    assert "<tls-crypt>\nTLS CRYPT KEY\n</tls-crypt>" in rendered_profile
+    assert configured_path(course_env, "ACTIVE_CLIENT_CN_FILE").read_text().startswith(
+        "course-shared-"
+    )
 
 
 def test_rotate_rolls_back_after_post_revoke_failure(

@@ -482,7 +482,13 @@ rotate_command() {
 
   (cd "$PKI_DIR" && EASYRSA_BATCH=1 EASYRSA_CERT_EXPIRE="$days" ./easyrsa build-client-full "$new_cn" nopass)
   openssl verify -CAfile "$PKI_DIR/pki/ca.crt" "$PKI_DIR/pki/issued/$new_cn.crt"
-  "$PKI_DIR/render-profile" "$new_cn" >"$ROTATION_WORK/current.ovpn"
+  # Keep the connection settings scoped to the renderer process. The sourced
+  # environment file intentionally does not globally export them.
+  PKI_DIR="$PKI_DIR" \
+    ENDPOINT="$ENDPOINT" \
+    OPENVPN_PORT="${OPENVPN_PORT:-1194}" \
+    OPENVPN_PROTOCOL="${OPENVPN_PROTOCOL:-udp}" \
+    "$PKI_DIR/render-profile" "$new_cn" >"$ROTATION_WORK/current.ovpn"
   validate_rendered_profile "$ROTATION_WORK/current.ovpn"
 
   ROTATION_RELOAD_ON_ROLLBACK=1
