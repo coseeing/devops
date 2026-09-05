@@ -2,11 +2,12 @@
 Description=Course OpenVPN scoped firewall
 Before=openvpn-server@course.service
 Wants=network-online.target
-After=network-online.target
+After=network-online.target docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/usr/local/libexec/openvpn-course-firewall preflight
 ExecStart=/usr/local/libexec/openvpn-course-firewall apply
 ExecReload=/usr/local/libexec/openvpn-course-firewall reload
 ExecStop=/usr/local/libexec/openvpn-course-firewall remove

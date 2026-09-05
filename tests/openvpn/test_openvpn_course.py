@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import subprocess
@@ -29,6 +30,7 @@ def course_env(tmp_path: Path) -> dict[str, str]:
         f"STATUS_PATH={status}\nENDPOINT=vpn.coseeing.org\n"
         "VPN_CIDR=10.250.0.0/24\nWINDOWS_CIDR=10.0.8.0/24\n"
         "PROFILE_BUCKET=test-bucket\nAWS_REGION=ap-northeast-1\n"
+        f"MUTATION_LOCK_PATH={tmp_path}/openvpn-course.lock\n"
     )
     (tmp_path / "active-client-cn").write_text("course-shared\n")
     return {"OPENVPN_COURSE_ENV_FILE": str(env_file), "PATH": os.environ["PATH"]}
@@ -62,7 +64,7 @@ def mock_commands(tmp_path: Path, course_env: dict[str, str]) -> Path:
     call_log.touch()
     mock_bin = tmp_path / "mock-bin"
     mock_bin.mkdir()
-    for name in ("aws", "openssl", "systemctl"):
+    for name in ("aws", "openssl", "systemctl", "date", "flock"):
         command = mock_bin / name
         command.write_text(
             "#!/bin/bash\n"
@@ -75,6 +77,17 @@ def mock_commands(tmp_path: Path, course_env: dict[str, str]) -> Path:
             "fi\n"
             "if [[ $(basename \"$0\") == openssl && ${MOCK_OPENSSL_FAIL_VERIFY:-} == 1 && ${1:-} == verify ]]; then\n"
             "  exit 44\n"
+            "fi\n"
+            "if [[ $(basename \"$0\") == date ]]; then\n"
+            "  if [[ $* == *'%Y%m%d%H%M%S'* ]]; then\n"
+            "    printf '20300101000000\\n'\n"
+            "  else\n"
+            "    printf '2030-01-01T00:10:00Z\\n'\n"
+            "  fi\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [[ $(basename \"$0\") == flock && ${MOCK_FLOCK_BUSY:-} == 1 ]]; then\n"
+            "  exit 1\n"
             "fi\n"
             "if [[ $(basename \"$0\") == aws && $* == *'s3 presign'* ]]; then\n"
             "  printf 'https://example.invalid/profile?signature=test\\n'\n"
@@ -451,7 +464,8 @@ def test_share_uses_random_key_and_exact_ten_minute_expiry(
 ) -> None:
     result = run_course(course_env, "share")
     assert result.returncode == 0, result.stderr
-    calls = mock_commands.read_text()
+    call_lines = mock_commands.read_text().splitlines()
+    calls = "\n".join(call_lines)
     assert "s3 cp" in calls
     assert "s3 presign" in calls
     assert "--expires-in 600" in calls
@@ -462,6 +476,13 @@ def test_share_uses_random_key_and_exact_ten_minute_expiry(
         r"Expires no later than: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
         result.stdout,
     )
+    deadline_index = next(
+        i for i, line in enumerate(call_lines) if line.startswith("date ")
+    )
+    presign_index = next(
+        i for i, line in enumerate(call_lines) if "s3 presign" in line
+    )
+    assert deadline_index < presign_index
     assert configured_path(course_env, "LAST_SHARED_KEY_FILE").read_text() == (
         "profiles/0123456789abcdef0123456789abcdef/course-vpn.ovpn\n"
     )
@@ -505,3 +526,59 @@ def test_share_keeps_previous_key_when_presign_fails(
         f"{previous_key}\n"
     )
     assert "https://" not in result.stdout
+
+
+def test_share_fails_fast_when_another_mutating_operation_holds_the_lock(
+    course_env, mock_commands
+) -> None:
+    lock_path = configured_path(course_env, "MUTATION_LOCK_PATH")
+    with lock_path.open("w") as held_lock:
+        fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        result = run_course({**course_env, "MOCK_FLOCK_BUSY": "1"}, "share")
+
+    assert result.returncode != 0
+    assert "another rotate or share operation is already in progress" in result.stderr
+    assert "aws " not in mock_commands.read_text()
+
+
+def test_rotate_fails_fast_after_confirmation_when_the_mutation_lock_is_busy(
+    course_env, mock_commands
+) -> None:
+    result = run_course(
+        {**course_env, "MOCK_FLOCK_BUSY": "1"},
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode != 0
+    assert "another rotate or share operation is already in progress" in result.stderr
+    assert "easyrsa " not in mock_commands.read_text()
+
+
+def test_read_only_commands_do_not_acquire_the_mutation_lock(course_env, tmp_path) -> None:
+    lock_log = tmp_path / "flock.log"
+    mock_bin = tmp_path / "read-only-bin"
+    mock_bin.mkdir()
+    (mock_bin / "flock").write_text(
+        "#!/bin/sh\nprintf 'unexpected flock %s\\n' \"$*\" >>\"$LOCK_LOG\"\nexit 99\n"
+    )
+    (mock_bin / "journalctl").write_text("#!/bin/sh\nexit 0\n")
+    for command in mock_bin.iterdir():
+        command.chmod(0o755)
+    env = {
+        **course_env,
+        "PATH": f"{mock_bin}:{course_env['PATH']}",
+        "LOCK_LOG": str(lock_log),
+    }
+
+    status = run_course(env, "status")
+    exported = run_course(env, "export", str(tmp_path / "course.ovpn"))
+    logs = run_course(env, "logs")
+
+    assert status.returncode == 0
+    assert exported.returncode == 0
+    assert logs.returncode == 0
+    assert not lock_log.exists()

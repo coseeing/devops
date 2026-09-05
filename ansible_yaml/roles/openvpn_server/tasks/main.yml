@@ -52,6 +52,8 @@
       - curl
       - unzip
       - nftables
+      - iptables
+      - gnupg
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -71,17 +73,97 @@
     - not openvpn_aws_cli_local.stat.exists
     - not openvpn_aws_cli_usr.stat.exists
   block:
+    - name: Reject unsupported AWS CLI architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_architecture in ['x86_64', 'aarch64']
+        fail_msg: >-
+          Unsupported AWS CLI architecture {{ ansible_architecture }};
+          expected x86_64 or aarch64. No installer was run.
+
+    - name: Select pinned AWS CLI architecture
+      ansible.builtin.set_fact:
+        openvpn_aws_cli_arch: "{{ 'x86_64' if ansible_architecture == 'x86_64' else 'aarch64' }}"
+
     - name: Create AWS CLI installer directory
       ansible.builtin.tempfile:
         state: directory
         suffix: openvpn-awscli
       register: openvpn_aws_cli_temp
 
+    - name: Create isolated AWS CLI signature keyring
+      ansible.builtin.file:
+        path: "{{ openvpn_aws_cli_temp.path }}/gnupg"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Stage pinned AWS CLI signing key
+      ansible.builtin.copy:
+        src: aws-cli-public-key.asc
+        dest: "{{ openvpn_aws_cli_temp.path }}/aws-cli-public-key.asc"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Import pinned AWS CLI signing key
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --homedir
+          - "{{ openvpn_aws_cli_temp.path }}/gnupg"
+          - --batch
+          - --import
+          - "{{ openvpn_aws_cli_temp.path }}/aws-cli-public-key.asc"
+      changed_when: false
+
+    - name: Read pinned AWS CLI signer fingerprint
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --homedir
+          - "{{ openvpn_aws_cli_temp.path }}/gnupg"
+          - --batch
+          - --with-colons
+          - --fingerprint
+          - "{{ openvpn_aws_cli_signer_fingerprint }}"
+      register: openvpn_aws_cli_signer
+      changed_when: false
+
+    - name: Verify pinned AWS CLI signer fingerprint
+      ansible.builtin.assert:
+        that:
+          - >-
+            'fpr:::::::::' ~ openvpn_aws_cli_signer_fingerprint ~ ':'
+            in openvpn_aws_cli_signer.stdout
+        fail_msg: AWS CLI signing key fingerprint did not match the pinned AWS key.
+
     - name: Download AWS CLI v2 installer
       ansible.builtin.get_url:
-        url: https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+        url: >-
+          https://awscli.amazonaws.com/awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip
         dest: "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip"
         mode: "0600"
+
+    - name: Download AWS CLI v2 installer signature
+      ansible.builtin.get_url:
+        url: >-
+          https://awscli.amazonaws.com/awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip.sig
+        dest: "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip.sig"
+        mode: "0600"
+
+    - name: Verify AWS CLI v2 installer signature
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --homedir
+          - "{{ openvpn_aws_cli_temp.path }}/gnupg"
+          - --batch
+          - --verify
+          - "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip.sig"
+          - "{{ openvpn_aws_cli_temp.path }}/awscliv2.zip"
+      changed_when: false
 
     - name: Unpack AWS CLI v2 installer
       ansible.builtin.unarchive:
@@ -203,6 +285,16 @@
       mode: "0755"
     - path: /usr/local/libexec
       mode: "0755"
+
+- name: Create root-owned OpenVPN mutation lock
+  ansible.builtin.file:
+    path: "{{ openvpn_mutation_lock_path }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
 
 - name: Copy Easy-RSA tree into OpenVPN PKI directory
   ansible.builtin.copy:
@@ -493,6 +585,7 @@
         mode: "0600"
         secret: false
         install_before_validation: false
+        service: firewall
       - path: /etc/openvpn/course-firewall.nft
         source: /etc/openvpn/course-firewall.nft.staged
         mode: "0600"
@@ -651,19 +744,6 @@
         argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]
       changed_when: false
 
-    - name: Persist OpenVPN course IP forwarding
-      ansible.builtin.copy:
-        dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
-        content: "net.ipv4.ip_forward=1\n"
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Apply OpenVPN course IP forwarding
-      ansible.builtin.command:
-        argv: [sysctl, -w, net.ipv4.ip_forward=1]
-      changed_when: false
-
     - name: Install validated active OpenVPN files
       ansible.builtin.copy:
         src: "{{ item.source }}"
@@ -690,6 +770,24 @@
       loop: "{{ openvpn_active_files }}"
       when: item.service | default('openvpn') == 'firewall'
       notify: Reload course firewall
+
+    - name: Preflight Docker user firewall integration
+      ansible.builtin.command:
+        argv: [/usr/local/libexec/openvpn-course-firewall, preflight]
+      changed_when: false
+
+    - name: Persist OpenVPN course IP forwarding
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/60-openvpn-course-forwarding.conf
+        content: "net.ipv4.ip_forward=1\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Apply OpenVPN course IP forwarding
+      ansible.builtin.command:
+        argv: [sysctl, -w, net.ipv4.ip_forward=1]
+      changed_when: false
 
     - name: Enable and start course firewall
       ansible.builtin.systemd_service:

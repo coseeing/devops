@@ -27,9 +27,17 @@ load_environment() {
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   local name
-  for name in PROFILE_PATH PKI_DIR ACTIVE_CLIENT_CN_FILE SERVER_CRL_PATH LAST_SHARED_KEY_FILE STATUS_PATH ENDPOINT VPN_CIDR WINDOWS_CIDR PROFILE_BUCKET AWS_REGION; do
+  for name in PROFILE_PATH PKI_DIR ACTIVE_CLIENT_CN_FILE SERVER_CRL_PATH LAST_SHARED_KEY_FILE STATUS_PATH ENDPOINT VPN_CIDR WINDOWS_CIDR PROFILE_BUCKET AWS_REGION MUTATION_LOCK_PATH; do
     [[ -n ${!name:-} ]] || die "missing configuration: $name"
   done
+  MUTATION_LOCK_PATH=${OPENVPN_COURSE_LOCK_PATH:-$MUTATION_LOCK_PATH}
+  [[ "$MUTATION_LOCK_PATH" == /* ]] || die "mutation lock path must be absolute"
+}
+
+acquire_mutation_lock() {
+  command -v flock >/dev/null 2>&1 || die "flock is required for mutating operations"
+  exec 9>"$MUTATION_LOCK_PATH" || die "could not open mutation lock: $MUTATION_LOCK_PATH"
+  flock -n 9 || die "another rotate or share operation is already in progress"
 }
 
 status_command() {
@@ -454,6 +462,7 @@ rotate_command() {
   printf 'Type ROTATE course-shared to invalidate every distributed profile: '
   IFS= read -r confirmation || die "rotation cancelled"
   [[ "$confirmation" == "ROTATE course-shared" ]] || die "rotation cancelled"
+  acquire_mutation_lock
 
   [[ -x "$PKI_DIR/easyrsa" ]] || die "missing Easy-RSA executable: $PKI_DIR/easyrsa"
   [[ -x "$PKI_DIR/render-profile" ]] || die "missing profile renderer: $PKI_DIR/render-profile"
@@ -510,9 +519,9 @@ share_command() {
   fi
 
   aws s3 cp "$PROFILE_PATH" "$uri" --only-show-errors --region "$AWS_REGION"
+  expires_at=$(utc_after_seconds 600) || die "could not calculate presign deadline"
   url=$(aws s3 presign "$uri" --expires-in 600 --region "$AWS_REGION")
   publish_text_atomically "$key" "$LAST_SHARED_KEY_FILE" 0600
-  expires_at=$(utc_after_seconds 600)
   printf '%s\nExpires no later than: %s\n' "$url" "$expires_at"
 }
 
@@ -528,10 +537,14 @@ case ${1:-} in
     ;;
   rotate)
     shift
+    [[ $# -eq 2 && ${1:-} == --days && ${2:-} =~ ^[0-9]+$ ]] || die "usage: openvpn-course rotate --days N"
+    (( 10#${2:-0} >= 1 && 10#${2:-0} <= 365 )) || die "usage: openvpn-course rotate --days N"
     rotate_command "$@"
     ;;
   share)
     shift
+    [[ $# -eq 0 ]] || die "usage: openvpn-course share"
+    acquire_mutation_lock
     share_command "$@"
     ;;
   logs)

@@ -3,16 +3,75 @@ set -euo pipefail
 
 readonly DEFAULT_RULES=/etc/openvpn/course-firewall.nft
 readonly RULES="${OPENVPN_COURSE_FIREWALL_RULES:-$DEFAULT_RULES}"
+readonly DEFAULT_ENV_FILE=/etc/openvpn/openvpn-course.env
+readonly ENV_FILE="${OPENVPN_COURSE_FIREWALL_ENV_FILE:-$DEFAULT_ENV_FILE}"
+readonly IPTABLES="${OPENVPN_COURSE_IPTABLES:-iptables}"
+readonly DOCKER_USER_CHAIN=DOCKER-USER
+readonly COURSE_CHAIN_A=OPENVPN-COURSE-A
+readonly COURSE_CHAIN_B=OPENVPN-COURSE-B
+readonly COURSE_GUARD_CHAIN=OPENVPN-COURSE-GUARD
+readonly COURSE_JUMP_COMMENT=openvpn-course-forward
+
+VPN_CIDR=
+WINDOWS_CIDR=
+NAT_SNAPSHOT=
+NAT_TABLE_EXISTED=0
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  return 1
+}
 
 usage() {
-  printf 'usage: openvpn-course-firewall {apply|reload|remove}\n' >&2
+  printf 'usage: openvpn-course-firewall {preflight|apply|reload|remove}\n' >&2
+}
+
+iptables_command() {
+  "$IPTABLES" -w 5 -t filter "$@"
 }
 
 table_exists() {
   nft list table "$@" >/dev/null 2>&1
 }
 
+chain_exists() {
+  iptables_command -S "$1" >/dev/null 2>&1
+}
+
+load_networks() {
+  VPN_CIDR=${OPENVPN_COURSE_FIREWALL_VPN_CIDR:-${VPN_CIDR:-}}
+  WINDOWS_CIDR=${OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR:-${WINDOWS_CIDR:-}}
+  if [[ -z ${VPN_CIDR:-} || -z ${WINDOWS_CIDR:-} ]]; then
+    [[ -r "$ENV_FILE" ]] || die "firewall configuration not found: $ENV_FILE"
+    # The Ansible template emits only shell-quoted, root-owned values.
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+  fi
+  VPN_CIDR=${OPENVPN_COURSE_FIREWALL_VPN_CIDR:-${VPN_CIDR:-}}
+  WINDOWS_CIDR=${OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR:-${WINDOWS_CIDR:-}}
+  [[ -n "$VPN_CIDR" ]] || die "missing firewall configuration: VPN_CIDR"
+  [[ -n "$WINDOWS_CIDR" ]] || die "missing firewall configuration: WINDOWS_CIDR"
+}
+
+preflight_docker_user() {
+  local version
+  if ! version=$("$IPTABLES" --version 2>&1); then
+    die "DOCKER-USER integration unavailable: iptables-nft is not installed"
+    return 1
+  fi
+  if [[ "$version" != *"nf_tables"* ]]; then
+    die "DOCKER-USER integration unavailable: iptables must use the nf_tables backend"
+    return 1
+  fi
+  if ! iptables_command -S "$DOCKER_USER_CHAIN" >/dev/null 2>&1; then
+    die "DOCKER-USER integration unavailable: Docker's DOCKER-USER chain is missing"
+    return 1
+  fi
+}
+
 remove_tables() {
+  # This is the legacy, exclusively course-owned table from the earlier nft
+  # filter implementation. Its exact removal cannot affect Docker tables.
   if table_exists inet openvpn_course; then
     nft delete table inet openvpn_course
   fi
@@ -36,25 +95,174 @@ write_replace_batch() {
 replace_tables() {
   nft --check --file "$RULES"
 
-  local batch_dir
+  local batch_dir batch_file
   batch_dir=$(mktemp -d "${TMPDIR:-/tmp}/openvpn-course-firewall.XXXXXX")
-  local batch_file="$batch_dir/replace.nft"
-  trap 'rm -rf "$batch_dir"' RETURN
-
+  batch_file="$batch_dir/replace.nft"
   write_replace_batch "$batch_file"
 
-  # nft processes command files as one transaction, so scoped deletes and the
-  # replacement rules are committed together instead of creating an empty gap.
-  nft --check --file "$batch_file"
-  nft --file "$batch_file"
+  # nft processes this file as one transaction, so replacement never leaves a
+  # gap in the exact, course-owned NAT policy.
+  if ! nft --check --file "$batch_file" || ! nft --file "$batch_file"; then
+    rm -rf -- "$batch_dir"
+    return 1
+  fi
+  rm -rf -- "$batch_dir"
+}
+
+capture_nat_snapshot() {
+  NAT_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/openvpn-course-firewall-nat.XXXXXX")
+  if nft list table ip openvpn_course_nat >"$NAT_SNAPSHOT" 2>/dev/null; then
+    NAT_TABLE_EXISTED=1
+  else
+    NAT_TABLE_EXISTED=0
+    : >"$NAT_SNAPSHOT"
+  fi
+}
+
+discard_nat_snapshot() {
+  [[ -z ${NAT_SNAPSHOT:-} ]] || rm -f -- "$NAT_SNAPSHOT"
+  NAT_SNAPSHOT=
+  NAT_TABLE_EXISTED=0
+}
+
+restore_nat_snapshot() {
+  local batch
+  [[ -n ${NAT_SNAPSHOT:-} ]] || return 0
+  batch=$(mktemp "${TMPDIR:-/tmp}/openvpn-course-firewall-restore.XXXXXX")
+  if table_exists ip openvpn_course_nat; then
+    printf 'delete table ip openvpn_course_nat\n' >"$batch"
+  else
+    : >"$batch"
+  fi
+  if (( NAT_TABLE_EXISTED )); then
+    cat "$NAT_SNAPSHOT" >>"$batch"
+  fi
+  nft --check --file "$batch" && nft --file "$batch" || \
+    printf 'warning: could not restore the previous course NAT table\n' >&2
+  rm -f -- "$batch"
+}
+
+remove_jump_to() {
+  local chain=$1
+  while iptables_command -C "$DOCKER_USER_CHAIN" -m comment --comment "$COURSE_JUMP_COMMENT" -j "$chain" >/dev/null 2>&1; do
+    iptables_command -D "$DOCKER_USER_CHAIN" -m comment --comment "$COURSE_JUMP_COMMENT" -j "$chain"
+  done
+}
+
+insert_jump_to() {
+  local chain=$1
+  remove_jump_to "$chain"
+  iptables_command -I "$DOCKER_USER_CHAIN" 1 -m comment --comment "$COURSE_JUMP_COMMENT" -j "$chain"
+}
+
+create_empty_chain() {
+  local chain=$1
+  if chain_exists "$chain"; then
+    iptables_command -F "$chain"
+  else
+    iptables_command -N "$chain"
+  fi
+}
+
+configure_guard_chain() {
+  create_empty_chain "$COURSE_GUARD_CHAIN"
+  iptables_command -A "$COURSE_GUARD_CHAIN" -o tun-course -j DROP
+  iptables_command -A "$COURSE_GUARD_CHAIN" -i tun-course -j DROP
+}
+
+configure_exact_chain() {
+  local chain=$1
+  create_empty_chain "$chain"
+  iptables_command -A "$chain" -o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables_command -A "$chain" -o tun-course -j DROP
+  iptables_command -A "$chain" -i tun-course -s "$VPN_CIDR" -d "$WINDOWS_CIDR" -p tcp --dport 3389 -j ACCEPT
+  iptables_command -A "$chain" -i tun-course -j DROP
+}
+
+remove_chain() {
+  local chain=$1
+  remove_jump_to "$chain"
+  if chain_exists "$chain"; then
+    iptables_command -F "$chain"
+    iptables_command -X "$chain"
+  fi
+}
+
+active_chain() {
+  local chain
+  for chain in "$COURSE_CHAIN_A" "$COURSE_CHAIN_B"; do
+    if iptables_command -C "$DOCKER_USER_CHAIN" -m comment --comment "$COURSE_JUMP_COMMENT" -j "$chain" >/dev/null 2>&1; then
+      printf '%s\n' "$chain"
+      return 0
+    fi
+  done
+  return 1
+}
+
+rollback_apply() {
+  local new_chain=$1
+  remove_chain "$new_chain" || true
+  restore_nat_snapshot
+  remove_chain "$COURSE_GUARD_CHAIN" || true
+  discard_nat_snapshot
+}
+
+apply_rules() {
+  local previous_chain= new_chain
+
+  preflight_docker_user || return 1
+  load_networks || return 1
+  nft --check --file "$RULES" || return 1
+  capture_nat_snapshot
+  previous_chain=$(active_chain || true)
+  if [[ "$previous_chain" == "$COURSE_CHAIN_A" ]]; then
+    new_chain=$COURSE_CHAIN_B
+  else
+    new_chain=$COURSE_CHAIN_A
+  fi
+
+  # The guard is a course-owned, tunnel-only drop chain. It keeps the previous
+  # policy fail-closed while the NAT transaction and staged filter chain are
+  # prepared, without flushing or changing Docker-owned rules.
+  if ! configure_guard_chain || ! insert_jump_to "$COURSE_GUARD_CHAIN"; then
+    remove_chain "$COURSE_GUARD_CHAIN" || true
+    discard_nat_snapshot
+    return 1
+  fi
+  if ! replace_tables || ! configure_exact_chain "$new_chain" || ! insert_jump_to "$new_chain"; then
+    rollback_apply "$new_chain"
+    return 1
+  fi
+
+  if [[ "$new_chain" == "$COURSE_CHAIN_A" ]]; then
+    remove_chain "$COURSE_CHAIN_B" || true
+  else
+    remove_chain "$COURSE_CHAIN_A" || true
+  fi
+  remove_chain "$COURSE_GUARD_CHAIN" || true
+  discard_nat_snapshot
+}
+
+remove_rules() {
+  if "$IPTABLES" --version >/dev/null 2>&1 && iptables_command -S "$DOCKER_USER_CHAIN" >/dev/null 2>&1; then
+    remove_chain "$COURSE_CHAIN_A" || true
+    remove_chain "$COURSE_CHAIN_B" || true
+    remove_chain "$COURSE_GUARD_CHAIN" || true
+  else
+    printf 'warning: DOCKER-USER unavailable; only course NAT cleanup was attempted\n' >&2
+  fi
+  remove_tables
 }
 
 case "${1:-}" in
+  preflight)
+    preflight_docker_user
+    ;;
   apply|reload)
-    replace_tables
+    apply_rules
     ;;
   remove)
-    remove_tables
+    remove_rules
     ;;
   *)
     usage

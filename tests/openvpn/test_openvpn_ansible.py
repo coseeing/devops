@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -173,8 +175,12 @@ def test_role_installs_scoped_firewall_before_openvpn_without_regressing_rollbac
     assert "argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]" in tasks
     assert "Reload course firewall" in handlers
     assert "flush ruleset" not in combined
-    assert "iptables" not in combined
-    assert "docker" not in combined.lower()
+    assert "iptables" in tasks
+    assert "DOCKER-USER" in FIREWALL.read_text()
+    assert "docker service" not in combined.lower()
+    preflight_index = activation_names.index("Preflight Docker user firewall integration")
+    persist_index = activation_names.index("Persist OpenVPN course IP forwarding")
+    assert firewall_install_index < preflight_index < persist_index < firewall_start_index
 
 
 def test_activation_rollback_restores_captured_service_state() -> None:
@@ -237,33 +243,108 @@ def test_ip_forward_changes_are_rolled_back_with_activation() -> None:
 
 def test_firewall_allows_only_rdp_to_windows_and_drops_other_vpn_traffic() -> None:
     rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
-    assert "table inet openvpn_course" in rules
     assert "table ip openvpn_course_nat" in rules
-    assert "type filter hook input priority filter; policy accept;" in rules
-    assert "type filter hook forward priority filter; policy accept;" in rules
     assert "type nat hook postrouting priority srcnat; policy accept;" in rules
-    assert 'iifname "tun-course" ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept' in rules
-    assert 'iifname "tun-course" ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept' not in rules
-    assert 'iifname "tun-course" drop' in rules
-    assert 'oifname "tun-course" ct state established,related accept' in rules
-    assert 'oifname "tun-course" drop' in rules
     assert 'ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 masquerade' in rules
+    assert "table inet openvpn_course" not in rules
+    assert "type filter hook" not in rules
     assert "flush ruleset" not in rules
     assert "0.0.0.0/0" not in rules
     assert "openvpn_vpc_cidr" not in rules
 
 
 def test_firewall_drops_new_return_path_traffic_before_vpn_ingress_rules() -> None:
-    rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
-    established = rules.index('oifname "tun-course" ct state established,related accept')
-    return_drop = rules.index('oifname "tun-course" drop')
-    exact_allow = rules.index(
-        'iifname "tun-course" ip saddr {{ openvpn_vpn_cidr }} '
-        'ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 accept'
+    helper = FIREWALL.read_text()
+    exact_chain = helper[
+        helper.index("configure_exact_chain() {") : helper.index("remove_chain() {")
+    ]
+    established = exact_chain.index("-o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+    return_drop = exact_chain.index("-o tun-course -j DROP")
+    exact_allow = exact_chain.index(
+        "-i tun-course -s \"$VPN_CIDR\" -d \"$WINDOWS_CIDR\" -p tcp --dport 3389 -j ACCEPT"
     )
-    vpn_ingress_drop = rules.rindex('iifname "tun-course" drop')
+    vpn_ingress_drop = exact_chain.index("-i tun-course -j DROP")
 
     assert established < return_drop < exact_allow < vpn_ingress_drop
+
+
+def test_firewall_filter_uses_docker_user_with_exact_rdp_rules() -> None:
+    rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
+    helper = FIREWALL.read_text()
+
+    assert "table ip openvpn_course_nat" in rules
+    assert "table inet openvpn_course" not in rules
+    assert "type filter hook forward" not in rules
+    assert 'ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 masquerade' in rules
+
+    assert "DOCKER-USER" in helper
+    assert "nf_tables" in helper
+    assert "OPENVPN-COURSE" in helper
+    assert "openvpn-course-forward" in helper
+    exact_chain = helper[
+        helper.index("configure_exact_chain() {") : helper.index("remove_chain() {")
+    ]
+    established = exact_chain.index("-o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+    return_drop = exact_chain.index("-o tun-course -j DROP")
+    exact_allow = exact_chain.index(
+        "-i tun-course -s \"$VPN_CIDR\" -d \"$WINDOWS_CIDR\" -p tcp --dport 3389 -j ACCEPT"
+    )
+    ingress_drop = exact_chain.index("-i tun-course -j DROP")
+    assert established < return_drop < exact_allow < ingress_drop
+    assert "-F DOCKER-USER" not in helper
+    assert "flush ruleset" not in helper
+    assert "systemctl restart docker" not in helper
+
+
+def test_firewall_preflight_requires_iptables_nft_docker_user_before_nat_load() -> None:
+    helper = FIREWALL.read_text()
+    preflight = helper.index("preflight_docker_user")
+    replace_nat = helper.index("replace_tables")
+    assert preflight < replace_nat
+    assert "DOCKER-USER integration unavailable" in helper
+
+
+def test_aws_cli_bootstrap_pins_architecture_and_verifies_aws_signature_before_install() -> None:
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    tasks = load_role_tasks()
+    install = named_task(tasks, "Install AWS CLI v2 when missing")
+    block = install["block"]
+    names = [str(task.get("name")) for task in block]
+
+    assert defaults["openvpn_aws_cli_version"] == "2.27.41"
+    assert defaults["openvpn_aws_cli_signer_fingerprint"] == "FB5DB77FD5C118B80511ADA8A6310ACC4672475C"
+    assert "x86_64" in str(block)
+    assert "aarch64" in str(block)
+    assert "awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip" in str(block)
+    assert "awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip.sig" in str(block)
+    assert "Reject unsupported AWS CLI architecture" in names
+    assert "Verify pinned AWS CLI signer fingerprint" in names
+    assert "Verify AWS CLI v2 installer signature" in names
+    assert names.index("Reject unsupported AWS CLI architecture") < names.index(
+        "Create AWS CLI installer directory"
+    )
+    assert names.index("Verify pinned AWS CLI signer fingerprint") < names.index(
+        "Unpack AWS CLI v2 installer"
+    )
+    assert names.index("Verify AWS CLI v2 installer signature") < names.index(
+        "Unpack AWS CLI v2 installer"
+    ) < names.index("Run AWS CLI v2 installer")
+    assert "openvpn_aws_cli_signer_fingerprint" in str(block)
+    assert (ROLE / "files/aws-cli-public-key.asc").is_file()
+
+
+def test_role_precreates_root_owned_mutation_lock_and_exposes_a_test_override() -> None:
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    tasks = (ROLE / "tasks/main.yml").read_text()
+    environment = (ROLE / "templates/openvpn-course.env.j2").read_text()
+    command = (ROOT / "scripts/openvpn-course").read_text()
+
+    assert defaults["openvpn_mutation_lock_path"] == "/run/lock/openvpn-course.lock"
+    assert "MUTATION_LOCK_PATH={{ openvpn_mutation_lock_path | quote }}" in environment
+    assert "Create root-owned OpenVPN mutation lock" in tasks
+    assert "mode: \"0600\"" in tasks
+    assert "OPENVPN_COURSE_LOCK_PATH" in command
+    assert "flock -n" in command
 
 
 def test_firewall_unit_is_required_scoped_and_starts_before_openvpn() -> None:
@@ -301,12 +382,12 @@ def write_fake_nft(tmp_path: Path) -> tuple[Path, Path, Path]:
         "    ;;\n"
         "  --check\\ --file*)\n"
         "    if [[ \"${FAKE_NFT_FAIL_CHECK:-0}\" == 1 ]]; then exit 33; fi\n"
-        "    if [[ \"${3:-}\" != \"${OPENVPN_COURSE_FIREWALL_RULES:-}\" && -f \"${3:-}\" ]]; then\n"
+        "    if [[ \"${3:-}\" != \"${OPENVPN_COURSE_FIREWALL_RULES:-}\" && -f \"${3:-}\" ]] && grep -Fq include \"$3\"; then\n"
         "      cp \"$3\" \"${FAKE_NFT_BATCH_DIR:?}/checked-batch.nft\"\n"
         "    fi\n"
         "    ;;\n"
         "  --file*)\n"
-        "    if [[ -f \"${2:-}\" ]]; then cp \"$2\" \"${FAKE_NFT_BATCH_DIR:?}/loaded-batch.nft\"; fi\n"
+        "    if [[ -f \"${2:-}\" ]] && grep -Fq include \"$2\"; then cp \"$2\" \"${FAKE_NFT_BATCH_DIR:?}/loaded-batch.nft\"; fi\n"
         "    if [[ \"${FAKE_NFT_FAIL_LOAD:-0}\" == 1 ]]; then exit 34; fi\n"
         "    ;;\n"
         "  *)\n"
@@ -318,8 +399,38 @@ def write_fake_nft(tmp_path: Path) -> tuple[Path, Path, Path]:
     return mock_bin, log, batch_dir
 
 
+def write_fake_iptables(tmp_path: Path, mock_bin: Path) -> Path:
+    log = tmp_path / "iptables-calls.log"
+    log.touch()
+    iptables = mock_bin / "iptables"
+    iptables.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >>\"${FAKE_IPTABLES_LOG:?}\"\n"
+        "if [[ \"$*\" == --version ]]; then\n"
+        "  printf 'iptables v1.8.9 (nf_tables)\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == '-w 5 -t filter -S DOCKER-USER' ]]; then\n"
+        "  [[ \"${FAKE_IPTABLES_NO_DOCKER_USER:-0}\" == 1 ]] && exit 1\n"
+        "  printf 'model: competing FORWARD default DROP\\n' >>\"${FAKE_IPTABLES_LOG:?}\"\n"
+        "  printf '%s\\n' '-N DOCKER-USER' '-A FORWARD -j DROP'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == *' -C '* ]]; then\n"
+        "  exit 1\n"
+        "fi\n"
+        "if [[ \"$*\" == *' -S OPENVPN-COURSE'* ]]; then\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+    iptables.chmod(0o755)
+    return log
+
+
 def firewall_env(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path, Path, Path]:
     mock_bin, log, batch_dir = write_fake_nft(tmp_path)
+    iptables_log = write_fake_iptables(tmp_path, mock_bin)
     rules = tmp_path / "course-firewall.nft"
     rules.write_text(
         "table inet openvpn_course {}\n"
@@ -331,6 +442,9 @@ def firewall_env(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path
         "OPENVPN_COURSE_FIREWALL_RULES": str(rules),
         "FAKE_NFT_LOG": str(log),
         "FAKE_NFT_BATCH_DIR": str(batch_dir),
+        "FAKE_IPTABLES_LOG": str(iptables_log),
+        "OPENVPN_COURSE_FIREWALL_VPN_CIDR": "10.250.0.0/24",
+        "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR": "10.0.8.0/24",
         **overrides,
     }
     return env, rules, log, batch_dir
@@ -356,21 +470,22 @@ def test_firewall_helper_apply_and_reload_replace_scoped_tables_atomically(
 
         assert result.returncode == 0, result.stderr
         calls = log.read_text().splitlines()
-        assert calls[:3] == [
-            f"--check --file {rules}",
-            "list table inet openvpn_course",
-            "list table ip openvpn_course_nat",
-        ]
-        assert calls[3].startswith("--check --file ")
-        assert calls[4].startswith("--file ")
-        assert calls[3].removeprefix("--check --file ") == calls[4].removeprefix(
-            "--file "
-        )
+        assert calls[0] == f"--check --file {rules}"
+        assert any(call.startswith("--file ") for call in calls)
         assert (batch_dir / "loaded-batch.nft").read_text() == (
             "delete table inet openvpn_course\n"
             "delete table ip openvpn_course_nat\n"
             f"include \"{rules}\"\n"
         )
+        iptables_calls = (tmp_path / command / "iptables-calls.log").read_text()
+        assert "model: competing FORWARD default DROP" in iptables_calls
+        assert "-I DOCKER-USER 1 -m comment --comment openvpn-course-forward -j OPENVPN-COURSE-GUARD" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -o tun-course -j DROP" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -i tun-course -s 10.250.0.0/24 -d 10.0.8.0/24 -p tcp --dport 3389 -j ACCEPT" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -i tun-course -j DROP" in iptables_calls
+        assert "-I DOCKER-USER 1 -m comment --comment openvpn-course-forward -j OPENVPN-COURSE-A" in iptables_calls
+        assert "-F DOCKER-USER" not in iptables_calls
 
 
 def test_firewall_helper_remove_deletes_only_scoped_tables(tmp_path: Path) -> None:
@@ -379,12 +494,15 @@ def test_firewall_helper_remove_deletes_only_scoped_tables(tmp_path: Path) -> No
     result = run_firewall(env, "remove")
 
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == [
+    assert log.read_text().splitlines()[-4:] == [
         "list table inet openvpn_course",
         "delete table inet openvpn_course",
         "list table ip openvpn_course_nat",
         "delete table ip openvpn_course_nat",
     ]
+    iptables_calls = (tmp_path / "iptables-calls.log").read_text()
+    assert "-F DOCKER-USER" not in iptables_calls
+    assert "-X DOCKER-USER" not in iptables_calls
 
 
 def test_firewall_helper_remove_succeeds_when_scoped_tables_are_absent(
@@ -397,7 +515,7 @@ def test_firewall_helper_remove_succeeds_when_scoped_tables_are_absent(
     result = run_firewall(env, "remove")
 
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == [
+    assert log.read_text().splitlines()[-2:] == [
         "list table inet openvpn_course",
         "list table ip openvpn_course_nat",
     ]
@@ -412,7 +530,23 @@ def test_firewall_helper_validation_failure_does_not_remove_or_load_tables(
 
     assert result.returncode != 0
     assert log.read_text().splitlines() == [f"--check --file {rules}"]
+    assert "DOCKER-USER integration unavailable" not in result.stderr
     assert not list(batch_dir.iterdir())
+
+
+def test_firewall_helper_fails_closed_before_nat_when_docker_user_is_missing(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_NO_DOCKER_USER="1"
+    )
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert "DOCKER-USER integration unavailable" in result.stderr
+    assert log.read_text() == ""
+    assert "-I DOCKER-USER" not in (tmp_path / "iptables-calls.log").read_text()
 
 
 def test_firewall_helper_load_failure_has_no_standalone_delete_before_failure(
@@ -436,11 +570,15 @@ def test_firewall_helper_defaults_to_fixed_production_rules_path(
     tmp_path: Path,
 ) -> None:
     mock_bin, log, batch_dir = write_fake_nft(tmp_path)
+    iptables_log = write_fake_iptables(tmp_path, mock_bin)
     env = {
         **os.environ,
         "PATH": f"{mock_bin}:{os.environ['PATH']}",
         "FAKE_NFT_LOG": str(log),
         "FAKE_NFT_BATCH_DIR": str(batch_dir),
+        "FAKE_IPTABLES_LOG": str(iptables_log),
+        "OPENVPN_COURSE_FIREWALL_VPN_CIDR": "10.250.0.0/24",
+        "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR": "10.0.8.0/24",
     }
 
     result = run_firewall(env, "apply")
@@ -462,8 +600,86 @@ def test_firewall_helper_rejects_invalid_cli_without_touching_nft(
     result = run_firewall(env, "status")
 
     assert result.returncode == 2
-    assert "usage: openvpn-course-firewall {apply|reload|remove}" in result.stderr
+    assert "usage: openvpn-course-firewall {preflight|apply|reload|remove}" in result.stderr
     assert log.read_text() == ""
+
+
+@pytest.mark.skipif(
+    os.environ.get("OPENVPN_RUN_NETNS_TEST") != "1"
+    or os.geteuid() != 0
+    or shutil.which("ip") is None
+    or shutil.which("iptables") is None
+    or shutil.which("nft") is None,
+    reason="optional namespace integration test requires root, iproute2, nftables, iptables-nft, and OPENVPN_RUN_NETNS_TEST=1",
+)
+def test_optional_namespace_integration_uses_docker_user_before_default_forward_drop(
+    tmp_path: Path,
+) -> None:
+    if "nf_tables" not in subprocess.run(
+        ["iptables", "--version"], text=True, capture_output=True, check=True
+    ).stdout:
+        pytest.skip("optional namespace integration requires the iptables-nft backend")
+
+    namespace = f"openvpn-course-{os.getpid()}"
+    rules = tmp_path / "course-firewall.nft"
+    rules.write_text(
+        "table ip openvpn_course_nat {\n"
+        "  chain postrouting { type nat hook postrouting priority srcnat; policy accept;\n"
+        "    ip saddr 10.250.0.0/24 ip daddr 10.0.8.0/24 tcp dport 3389 masquerade\n"
+        "  }\n"
+        "}\n"
+    )
+    subprocess.run(["ip", "netns", "add", namespace], check=True)
+    try:
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-N", "DOCKER-USER"],
+            check=True,
+        )
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-A", "FORWARD", "-j", "DROP"],
+            check=True,
+        )
+        result = subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "env",
+                f"OPENVPN_COURSE_FIREWALL_RULES={rules}",
+                "OPENVPN_COURSE_FIREWALL_VPN_CIDR=10.250.0.0/24",
+                "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR=10.0.8.0/24",
+                "bash",
+                str(FIREWALL),
+                "apply",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        docker_user = subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-S", "DOCKER-USER"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        course_chain = subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-S", "OPENVPN-COURSE-A"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert "openvpn-course-forward" in docker_user
+        assert "-A OPENVPN-COURSE-A -o tun-course -j DROP" in course_chain
+        assert "-A FORWARD -j DROP" in subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-S", "FORWARD"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+    finally:
+        subprocess.run(["ip", "netns", "del", namespace], check=False)
 
 
 def write_renderer_fixture(tmp_path: Path) -> dict[str, str]:

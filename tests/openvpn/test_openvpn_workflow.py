@@ -135,3 +135,21 @@ def test_operations_doc_stops_and_disables_openvpn_before_firewall_removal() -> 
     positions = [section.index(command) for command in commands]
     assert positions == sorted(positions)
     assert "never remove the firewall while the VPN service runs" in section
+
+
+def test_operations_doc_explains_docker_user_preflight_and_mutation_locking() -> None:
+    text = (ROOT / "docs/openvpn-course-operations.md").read_text()
+    scope = doc_section(text, "Scope and Security Boundary")
+    share = doc_section(text, "Share a Profile for 10 Minutes")
+    rotation = doc_section(text, "Rotate Every Distributed Profile")
+    recovery = doc_section(text, "Recover or Remove Only OpenVPN Components")
+
+    assert "DOCKER-USER" in scope
+    assert "iptables-nft" in scope
+    assert "does not restart Docker" in scope
+    assert "before `aws s3 presign`" in share
+    assert "another rotate or share operation is already in progress" in share
+    assert "another rotate or share operation is already in progress" in rotation
+    assert "does not lock `status`, `export`, or `logs`" in rotation
+    assert "DOCKER-USER jump" in recovery
+    assert "ip openvpn_course_nat" in recovery

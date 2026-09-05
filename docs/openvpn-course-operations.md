@@ -11,8 +11,16 @@ chat history, or CI logs.
 The workflow and Ansible role install OpenVPN on the existing Linux EC2 host,
 route only the managed Windows subnet through the tunnel, and allow forwarded
 traffic only to TCP port 3389. They do not change VMS Portal, Windows hosts,
-route tables, Network ACLs, Docker, Traefik, or Security Groups. In particular,
-this deployment does not modify Security Groups.
+route tables, Network ACLs, Docker daemon configuration, Traefik, or Security
+Groups. In particular, this deployment does not modify Security Groups.
+
+On a Docker host, the firewall places a uniquely commented, course-owned jump
+in Docker's administrator-owned `DOCKER-USER` chain through the `iptables-nft`
+backend. That is required because a separate nftables forward base chain cannot
+override Docker's or the host's default `FORWARD` drop policy. The role does not restart Docker, edit its daemon/configuration, stop containers, or touch
+Docker-owned rules beyond that exact jump and its `OPENVPN-COURSE-*` chains. If
+`iptables-nft` or `DOCKER-USER` is unavailable, the firewall preflight fails
+closed before the role enables IPv4 forwarding or starts OpenVPN.
 
 A shared client certificate is used for all course Macs. Multiple Macs may be
 connected at once, but the certificate does not provide per-person identity or
@@ -118,6 +126,11 @@ temporary signing credentials expire first. Send the URL only through a
 trusted channel and treat anyone who receives it as able to download the
 shared profile during its valid period.
 
+The displayed `Expires no later than` bound is calculated immediately before `aws s3 presign`; the command prints the generated URL exactly once. The
+`share` operation holds the root-owned mutation lock for its complete update.
+If another rotation or share currently owns that lock, it fails without S3
+changes with `another rotate or share operation is already in progress`.
+
 The command first best-effort deletes the previously recorded transient object
 before uploading or presigning the new one. If that cleanup succeeds and a
 later upload or presign fails, the previous URL/object may already be unavailable;
@@ -151,6 +164,9 @@ ROTATE course-shared
 
 If generation, validation, or activation fails, the command restores the
 previous PKI/profile state where possible. Do not delete PKI files manually.
+`rotate` holds the same root-owned mutation lock as `share`; if it is busy, the
+command reports `another rotate or share operation is already in progress` and
+makes no PKI changes. The lock serializes only those mutations and does not lock `status`, `export`, or `logs`.
 
 ## Read Service Logs
 
@@ -277,9 +293,10 @@ sudo openvpn-course status
 ```
 
 If a staged firewall update must be removed, include that action only in the
-ordered teardown below. The scoped helper removes only `inet openvpn_course`
-and `ip openvpn_course_nat`; never remove those tables while the VPN service
-is running.
+ordered teardown below. The scoped helper removes only its uniquely commented
+`DOCKER-USER jump`, `OPENVPN-COURSE-*` chains, the legacy
+`inet openvpn_course` table when present, and `ip openvpn_course_nat`; never
+remove those rules/tables while the VPN service is running.
 
 Before removing the deployment, save any incident evidence and confirm that no
 participant needs the service. Stop and disable only the two OpenVPN units:
