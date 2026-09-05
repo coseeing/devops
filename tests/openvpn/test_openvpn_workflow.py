@@ -51,3 +51,28 @@ def test_workflow_validates_before_deploy_and_hides_s3_sentinel_url() -> None:
     deploy_run = deploy_steps["Deploy OpenVPN with Ansible"]["run"]
     assert "ansible-playbook" in deploy_run
     assert "current.ovpn" not in deploy_run
+
+
+def test_deployment_summary_excludes_topology_outputs() -> None:
+    workflow = load_workflow()
+    summary_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Deployment summary"
+    )
+    summary_run = summary_step["run"]
+
+    for forbidden in (
+        "Endpoint:",
+        "Linux EC2:",
+        "Linux public IP:",
+        "VPN CIDR:",
+        "Windows CIDR:",
+        "VPC CIDR:",
+    ):
+        assert forbidden not in summary_run
+
+    assert "Distribution stack:" in summary_run
+    assert "Profile bucket:" in summary_run
+    assert "Deployment:" in summary_run
+    assert "Remote checks:" in summary_run

@@ -218,26 +218,16 @@ jobs:
             'sudo systemctl is-active --quiet openvpn-course-firewall openvpn-server@course && sudo systemctl is-enabled --quiet openvpn-course-firewall openvpn-server@course && sudo ss -lun | grep -Eq "[:.]1194[[:space:]]" && test "$(sudo sysctl -n net.ipv4.ip_forward)" = 1 && sudo nft list table inet openvpn_course >/dev/null && sudo nft list table ip openvpn_course_nat >/dev/null'
       - name: Deployment summary
         env:
-          ENDPOINT: ${{ steps.discover.outputs.endpoint }}
-          HOST_IP: ${{ steps.discover.outputs.host_ip }}
-          INSTANCE_ID: ${{ steps.discover.outputs.instance_id }}
           PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}
-          VPN_CIDR: ${{ steps.discover.outputs.vpn_cidr }}
-          VPC_CIDR: ${{ steps.discover.outputs.vpc_cidr }}
-          WINDOWS_CIDR: ${{ steps.discover.outputs.windows_cidr }}
         run: |
           set -euo pipefail
 
           {
             echo '### OpenVPN deployment'
             echo
-            echo "- Endpoint: \`$ENDPOINT\`"
-            echo "- Linux EC2: \`$INSTANCE_ID\`"
-            echo "- Linux public IP: \`$HOST_IP\`"
-            echo "- VPN CIDR: \`$VPN_CIDR\`"
-            echo "- Windows CIDR: \`$WINDOWS_CIDR\`"
-            echo "- VPC CIDR: \`$VPC_CIDR\`"
+            echo "- Distribution stack: \`$DISTRIBUTION_STACK_NAME\`"
             echo "- Profile bucket: \`$PROFILE_BUCKET\`"
+            echo "- Deployment: \`passed\`"
             echo "- Remote checks: \`passed\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove EC2 SSH key
