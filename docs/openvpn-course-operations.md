@@ -276,12 +276,10 @@ sudo systemctl restart openvpn-course-firewall openvpn-server@course
 sudo openvpn-course status
 ```
 
-If a staged firewall update must be removed, use the scoped helper; it removes
-only `inet openvpn_course` and `ip openvpn_course_nat`:
-
-```bash
-sudo openvpn-course-firewall remove
-```
+If a staged firewall update must be removed, include that action only in the
+ordered teardown below. The scoped helper removes only `inet openvpn_course`
+and `ip openvpn_course_nat`; never remove those tables while the VPN service
+is running.
 
 Before removing the deployment, save any incident evidence and confirm that no
 participant needs the service. Stop and disable only the two OpenVPN units:

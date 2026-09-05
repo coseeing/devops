@@ -124,7 +124,7 @@ def test_operations_doc_separates_user_instance_lookup_from_admin_listing() -> N
 def test_operations_doc_stops_and_disables_openvpn_before_firewall_removal() -> None:
     text = (ROOT / "docs/openvpn-course-operations.md").read_text()
     section = doc_section(text, "Recover or Remove Only OpenVPN Components")
-    section = section.split("Before removing the deployment", 1)[1]
+    assert section.count("sudo openvpn-course-firewall remove") == 1
     commands = (
         "sudo systemctl stop openvpn-server@course",
         "sudo systemctl disable openvpn-server@course",
