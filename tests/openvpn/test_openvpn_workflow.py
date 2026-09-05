@@ -78,6 +78,27 @@ def test_deployment_summary_excludes_topology_outputs() -> None:
     assert "Remote checks:" in summary_run
 
 
+def test_workflow_remote_check_verifies_active_docker_course_firewall_path() -> None:
+    workflow = load_workflow()
+    remote_run = next(
+        step["run"]
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Verify remote OpenVPN service state"
+    )
+
+    assert "nft list table inet openvpn_course >/dev/null" not in remote_run
+    assert "iptables --version" in remote_run
+    assert "nf_tables" in remote_run
+    assert "iptables -w 5 -t filter -C FORWARD -j DOCKER-USER" in remote_run
+    assert "iptables -w 5 -t filter -S DOCKER-USER" in remote_run
+    assert "openvpn-course-forward" in remote_run
+    assert "OPENVPN-COURSE-A" in remote_run
+    assert "OPENVPN-COURSE-B" in remote_run
+    assert "-S \"$active_course_chain\"" in remote_run
+    assert "nft list table inet openvpn_course_input" in remote_run
+    assert "nft list table ip openvpn_course_nat" in remote_run
+
+
 def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
     text = (ROOT / "docs/openvpn-course-operations.md").read_text()
     for required in (
@@ -146,8 +167,10 @@ def test_operations_doc_explains_docker_user_preflight_and_mutation_locking() ->
 
     assert "DOCKER-USER" in scope
     assert "iptables-nft" in scope
+    assert "`FORWARD`-to-`DOCKER-USER`" in scope
+    assert "inet openvpn_course_input" in scope
     assert "does not restart Docker" in scope
-    assert "before `aws s3 presign`" in share
+    assert "after `aws s3 presign`" in share
     assert "another rotate or share operation is already in progress" in share
     assert "another rotate or share operation is already in progress" in rotation
     assert "does not lock `status`, `export`, or `logs`" in rotation

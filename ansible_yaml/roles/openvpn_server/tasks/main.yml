@@ -68,10 +68,31 @@
     path: /usr/bin/aws
   register: openvpn_aws_cli_usr
 
-- name: Install AWS CLI v2 when missing
-  when:
-    - not openvpn_aws_cli_local.stat.exists
-    - not openvpn_aws_cli_usr.stat.exists
+- name: Select existing AWS CLI candidate
+  ansible.builtin.set_fact:
+    openvpn_aws_cli_existing_path: >-
+      {{ '/usr/local/bin/aws' if openvpn_aws_cli_local.stat.exists else
+      ('/usr/bin/aws' if openvpn_aws_cli_usr.stat.exists else '') }}
+
+- name: Inspect selected AWS CLI version
+  ansible.builtin.command:
+    argv: ["{{ openvpn_aws_cli_existing_path }}", --version]
+  register: openvpn_aws_cli_existing_version
+  changed_when: false
+  failed_when: false
+  when: openvpn_aws_cli_existing_path | length > 0
+
+- name: Decide whether pinned AWS CLI installer is required
+  ansible.builtin.set_fact:
+    openvpn_aws_cli_installer_required: >-
+      {{ openvpn_aws_cli_existing_path == ''
+      or openvpn_aws_cli_existing_version.rc | default(1) != 0
+      or not (((openvpn_aws_cli_existing_version.stdout | default('')) ~
+      (openvpn_aws_cli_existing_version.stderr | default(''))) is search(
+      '(^|\s)aws-cli/' ~ (openvpn_aws_cli_version | regex_escape) ~ '(\s|$)')) }}
+
+- name: Install pinned AWS CLI v2
+  when: openvpn_aws_cli_installer_required | bool
   block:
     - name: Reject unsupported AWS CLI architecture
       ansible.builtin.assert:
@@ -180,7 +201,6 @@
           - --install-dir
           - /usr/local/aws-cli
           - --update
-        creates: /usr/local/bin/aws
   always:
     - name: Remove AWS CLI installer directory
       ansible.builtin.file:
@@ -188,11 +208,41 @@
         state: absent
       when: openvpn_aws_cli_temp is defined
 
-- name: Select AWS CLI path
+- name: Check installed AWS CLI in /usr/local/bin
+  ansible.builtin.stat:
+    path: /usr/local/bin/aws
+  register: openvpn_aws_cli_installed
+  when: openvpn_aws_cli_installer_required | bool
+
+- name: Read installed AWS CLI v2 version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/aws, --version]
+  register: openvpn_aws_cli_installed_version
+  changed_when: false
+  failed_when: false
+  when:
+    - openvpn_aws_cli_installer_required | bool
+    - openvpn_aws_cli_installed.stat.exists
+
+- name: Verify installed AWS CLI v2 version
+  ansible.builtin.assert:
+    that:
+      - openvpn_aws_cli_installed.stat.exists
+      - openvpn_aws_cli_installed_version.rc == 0
+      - >-
+        ((openvpn_aws_cli_installed_version.stdout | default('')) ~
+        (openvpn_aws_cli_installed_version.stderr | default(''))) is search(
+        '(^|\s)aws-cli/' ~ (openvpn_aws_cli_version | regex_escape) ~ '(\s|$)')
+    fail_msg: >-
+      AWS CLI must be the pinned v2 release {{ openvpn_aws_cli_version }} at
+      /usr/local/bin/aws.
+  when: openvpn_aws_cli_installer_required | bool
+
+- name: Select verified AWS CLI path
   ansible.builtin.set_fact:
     openvpn_aws_cli_path: >-
-      {{ '/usr/local/bin/aws' if openvpn_aws_cli_local.stat.exists else
-      ('/usr/bin/aws' if openvpn_aws_cli_usr.stat.exists else '/usr/local/bin/aws') }}
+      {{ '/usr/local/bin/aws' if openvpn_aws_cli_installer_required else
+      openvpn_aws_cli_existing_path }}
 
 - name: Verify temporary profile bucket permissions with sentinel data
   when: openvpn_verify_s3 | bool

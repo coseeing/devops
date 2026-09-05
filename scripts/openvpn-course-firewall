@@ -11,11 +11,13 @@ readonly COURSE_CHAIN_A=OPENVPN-COURSE-A
 readonly COURSE_CHAIN_B=OPENVPN-COURSE-B
 readonly COURSE_GUARD_CHAIN=OPENVPN-COURSE-GUARD
 readonly COURSE_JUMP_COMMENT=openvpn-course-forward
+readonly LEGACY_FILTER_TABLE=openvpn_course
+readonly INPUT_TABLE=openvpn_course_input
+readonly NAT_TABLE=openvpn_course_nat
 
 VPN_CIDR=
 WINDOWS_CIDR=
-NAT_SNAPSHOT=
-NAT_TABLE_EXISTED=0
+SCOPED_TABLES_SNAPSHOT=
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -67,38 +69,58 @@ preflight_docker_user() {
     die "DOCKER-USER integration unavailable: Docker's DOCKER-USER chain is missing"
     return 1
   fi
+  if ! iptables_command -C FORWARD -j "$DOCKER_USER_CHAIN" >/dev/null 2>&1; then
+    die "DOCKER-USER integration unavailable: FORWARD does not jump to Docker's DOCKER-USER chain"
+    return 1
+  fi
+}
+
+write_scoped_tables_batch() {
+  local batch_file=$1 rules_file=${2:-} found=0
+  : >"$batch_file"
+
+  # The legacy table is exclusively course-owned. The other two tables are the
+  # active host-input and exact-RDP SNAT policy; no Docker-owned table is read
+  # or changed by this batch.
+  if table_exists inet "$LEGACY_FILTER_TABLE"; then
+    printf 'delete table inet %s\n' "$LEGACY_FILTER_TABLE" >>"$batch_file"
+    found=1
+  fi
+  if table_exists inet "$INPUT_TABLE"; then
+    printf 'delete table inet %s\n' "$INPUT_TABLE" >>"$batch_file"
+    found=1
+  fi
+  if table_exists ip "$NAT_TABLE"; then
+    printf 'delete table ip %s\n' "$NAT_TABLE" >>"$batch_file"
+    found=1
+  fi
+  if [[ -n "$rules_file" ]]; then
+    printf 'include "%s"\n' "$rules_file" >>"$batch_file"
+    found=1
+  fi
+  (( found ))
 }
 
 remove_tables() {
-  # This is the legacy, exclusively course-owned table from the earlier nft
-  # filter implementation. Its exact removal cannot affect Docker tables.
-  if table_exists inet openvpn_course; then
-    nft delete table inet openvpn_course
+  local batch_dir batch_file
+  batch_dir=$(mktemp -d "${TMPDIR:-/tmp}/openvpn-course-firewall-remove.XXXXXX")
+  batch_file="$batch_dir/remove.nft"
+  if ! write_scoped_tables_batch "$batch_file"; then
+    rm -rf -- "$batch_dir"
+    return 0
   fi
-  if table_exists ip openvpn_course_nat; then
-    nft delete table ip openvpn_course_nat
+  if ! nft --check --file "$batch_file" || ! nft --file "$batch_file"; then
+    rm -rf -- "$batch_dir"
+    return 1
   fi
-}
-
-write_replace_batch() {
-  local batch_file=$1
-  : >"$batch_file"
-  if table_exists inet openvpn_course; then
-    printf 'delete table inet openvpn_course\n' >>"$batch_file"
-  fi
-  if table_exists ip openvpn_course_nat; then
-    printf 'delete table ip openvpn_course_nat\n' >>"$batch_file"
-  fi
-  printf 'include "%s"\n' "$RULES" >>"$batch_file"
+  rm -rf -- "$batch_dir"
 }
 
 replace_tables() {
-  nft --check --file "$RULES"
-
   local batch_dir batch_file
   batch_dir=$(mktemp -d "${TMPDIR:-/tmp}/openvpn-course-firewall.XXXXXX")
   batch_file="$batch_dir/replace.nft"
-  write_replace_batch "$batch_file"
+  write_scoped_tables_batch "$batch_file" "$RULES"
 
   # nft processes this file as one transaction, so replacement never leaves a
   # gap in the exact, course-owned NAT policy.
@@ -109,36 +131,27 @@ replace_tables() {
   rm -rf -- "$batch_dir"
 }
 
-capture_nat_snapshot() {
-  NAT_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/openvpn-course-firewall-nat.XXXXXX")
-  if nft list table ip openvpn_course_nat >"$NAT_SNAPSHOT" 2>/dev/null; then
-    NAT_TABLE_EXISTED=1
-  else
-    NAT_TABLE_EXISTED=0
-    : >"$NAT_SNAPSHOT"
-  fi
+capture_scoped_tables_snapshot() {
+  SCOPED_TABLES_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/openvpn-course-firewall-snapshot.XXXXXX")
+  : >"$SCOPED_TABLES_SNAPSHOT"
+  nft list table inet "$LEGACY_FILTER_TABLE" >>"$SCOPED_TABLES_SNAPSHOT" 2>/dev/null || true
+  nft list table inet "$INPUT_TABLE" >>"$SCOPED_TABLES_SNAPSHOT" 2>/dev/null || true
+  nft list table ip "$NAT_TABLE" >>"$SCOPED_TABLES_SNAPSHOT" 2>/dev/null || true
 }
 
-discard_nat_snapshot() {
-  [[ -z ${NAT_SNAPSHOT:-} ]] || rm -f -- "$NAT_SNAPSHOT"
-  NAT_SNAPSHOT=
-  NAT_TABLE_EXISTED=0
+discard_scoped_tables_snapshot() {
+  [[ -z ${SCOPED_TABLES_SNAPSHOT:-} ]] || rm -f -- "$SCOPED_TABLES_SNAPSHOT"
+  SCOPED_TABLES_SNAPSHOT=
 }
 
-restore_nat_snapshot() {
+restore_scoped_tables_snapshot() {
   local batch
-  [[ -n ${NAT_SNAPSHOT:-} ]] || return 0
+  [[ -n ${SCOPED_TABLES_SNAPSHOT:-} ]] || return 0
   batch=$(mktemp "${TMPDIR:-/tmp}/openvpn-course-firewall-restore.XXXXXX")
-  if table_exists ip openvpn_course_nat; then
-    printf 'delete table ip openvpn_course_nat\n' >"$batch"
-  else
-    : >"$batch"
-  fi
-  if (( NAT_TABLE_EXISTED )); then
-    cat "$NAT_SNAPSHOT" >>"$batch"
-  fi
+  write_scoped_tables_batch "$batch" || :
+  cat "$SCOPED_TABLES_SNAPSHOT" >>"$batch"
   nft --check --file "$batch" && nft --file "$batch" || \
-    printf 'warning: could not restore the previous course NAT table\n' >&2
+    printf 'warning: could not restore the previous course firewall tables\n' >&2
   rm -f -- "$batch"
 }
 
@@ -202,9 +215,9 @@ active_chain() {
 rollback_apply() {
   local new_chain=$1
   remove_chain "$new_chain" || true
-  restore_nat_snapshot
+  restore_scoped_tables_snapshot
   remove_chain "$COURSE_GUARD_CHAIN" || true
-  discard_nat_snapshot
+  discard_scoped_tables_snapshot
 }
 
 apply_rules() {
@@ -212,8 +225,7 @@ apply_rules() {
 
   preflight_docker_user || return 1
   load_networks || return 1
-  nft --check --file "$RULES" || return 1
-  capture_nat_snapshot
+  capture_scoped_tables_snapshot
   previous_chain=$(active_chain || true)
   if [[ "$previous_chain" == "$COURSE_CHAIN_A" ]]; then
     new_chain=$COURSE_CHAIN_B
@@ -226,10 +238,15 @@ apply_rules() {
   # prepared, without flushing or changing Docker-owned rules.
   if ! configure_guard_chain || ! insert_jump_to "$COURSE_GUARD_CHAIN"; then
     remove_chain "$COURSE_GUARD_CHAIN" || true
-    discard_nat_snapshot
+    discard_scoped_tables_snapshot
     return 1
   fi
-  if ! replace_tables || ! configure_exact_chain "$new_chain" || ! insert_jump_to "$new_chain"; then
+  if ! replace_tables; then
+    remove_chain "$COURSE_GUARD_CHAIN" || true
+    discard_scoped_tables_snapshot
+    return 1
+  fi
+  if ! configure_exact_chain "$new_chain" || ! insert_jump_to "$new_chain"; then
     rollback_apply "$new_chain"
     return 1
   fi
@@ -240,7 +257,7 @@ apply_rules() {
     remove_chain "$COURSE_CHAIN_A" || true
   fi
   remove_chain "$COURSE_GUARD_CHAIN" || true
-  discard_nat_snapshot
+  discard_scoped_tables_snapshot
 }
 
 remove_rules() {

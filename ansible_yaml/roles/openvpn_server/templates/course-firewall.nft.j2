@@ -1,3 +1,10 @@
+table inet openvpn_course_input {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname "tun-course" drop
+  }
+}
+
 table ip openvpn_course_nat {
   chain postrouting {
     type nat hook postrouting priority srcnat; policy accept;

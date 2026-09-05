@@ -18,9 +18,18 @@ On a Docker host, the firewall places a uniquely commented, course-owned jump
 in Docker's administrator-owned `DOCKER-USER` chain through the `iptables-nft`
 backend. That is required because a separate nftables forward base chain cannot
 override Docker's or the host's default `FORWARD` drop policy. The role does not restart Docker, edit its daemon/configuration, stop containers, or touch
-Docker-owned rules beyond that exact jump and its `OPENVPN-COURSE-*` chains. If
-`iptables-nft` or `DOCKER-USER` is unavailable, the firewall preflight fails
-closed before the role enables IPv4 forwarding or starts OpenVPN.
+Docker-owned rules beyond that exact jump and its `OPENVPN-COURSE-*` chains.
+The `FORWARD` chain must itself jump to `DOCKER-USER`; merely having a
+`DOCKER-USER` chain is not sufficient. If `iptables-nft`, `DOCKER-USER`, or
+that `FORWARD`-to-`DOCKER-USER` path is unavailable, the firewall preflight
+fails closed before the role enables IPv4 forwarding or starts OpenVPN.
+
+The course also owns `inet openvpn_course_input`, whose input base chain has a
+terminal drop for all `iifname "tun-course"` traffic. It prevents VPN clients
+from reaching Linux host services through the tunnel while safely coexisting
+with other host input policy: its drop verdict is terminal. The helper
+atomically replaces only that table and `ip openvpn_course_nat` (and removes
+the legacy `inet openvpn_course` table if it is still present).
 
 A shared client certificate is used for all course Macs. Multiple Macs may be
 connected at once, but the certificate does not provide per-person identity or
@@ -59,13 +68,15 @@ course OpenVPN > Run workflow**. Supply these inputs exactly:
 | `client_days` | Shared certificate lifetime from 1 through 365 days (default `30`) |
 | `confirm_endpoint` | Required only for deploy; type the exact same string as `vpn_endpoint`, including case and punctuation |
 
-Select `validate` first. It runs tests and input checks and does not deploy or
-query AWS credentials in the validation job. A deploy is guarded by both
+Select `validate` first. Its credential-free job runs repository and static
+checks only; it does not validate the supplied deployment inputs against AWS
+networks and does not query AWS credentials. A deploy is guarded by both
 `action == deploy` and the exact endpoint confirmation; a missing or different
-confirmation skips the deploy job. The deploy job discovers the existing Linux
-host and Windows/VPC CIDRs read-only, creates or updates only the dedicated
-OpenVPN distribution stack, and then invokes the OpenVPN Ansible playbook. It
-does not modify Security Groups.
+confirmation skips the deploy job. Only after that guard, the deploy job uses
+read-only AWS discovery for the Linux host and Windows/VPC CIDRs, validates the
+deployment inputs against those discovered values, creates or updates only the
+dedicated OpenVPN distribution stack, and then invokes the OpenVPN Ansible
+playbook. It does not modify Security Groups.
 
 Do not trigger a deploy until the endpoint, Linux stack, Windows subnet, VPN
 CIDR, and certificate lifetime have been reviewed by the operator. Local checks
@@ -126,7 +137,10 @@ temporary signing credentials expire first. Send the URL only through a
 trusted channel and treat anyone who receives it as able to download the
 shared profile during its valid period.
 
-The displayed `Expires no later than` bound is calculated immediately before `aws s3 presign`; the command prints the generated URL exactly once. The
+Immediately after `aws s3 presign` returns, the displayed `Expires no later than` bound is
+calculated immediately as that returned-clock time plus 600 seconds; the
+signature timestamp can only be at or before the command returned, so this is
+a true upper bound. The command prints the generated URL exactly once. The
 `share` operation holds the root-owned mutation lock for its complete update.
 If another rotation or share currently owns that lock, it fails without S3
 changes with `another rotate or share operation is already in progress`.
@@ -295,8 +309,9 @@ sudo openvpn-course status
 If a staged firewall update must be removed, include that action only in the
 ordered teardown below. The scoped helper removes only its uniquely commented
 `DOCKER-USER jump`, `OPENVPN-COURSE-*` chains, the legacy
-`inet openvpn_course` table when present, and `ip openvpn_course_nat`; never
-remove those rules/tables while the VPN service is running.
+`inet openvpn_course` table when present, `inet openvpn_course_input`, and
+`ip openvpn_course_nat`; never remove those rules/tables while the VPN service
+is running.
 
 Before removing the deployment, save any incident evidence and confirm that no
 participant needs the service. Stop and disable only the two OpenVPN units:

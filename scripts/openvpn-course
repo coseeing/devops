@@ -519,8 +519,10 @@ share_command() {
   fi
 
   aws s3 cp "$PROFILE_PATH" "$uri" --only-show-errors --region "$AWS_REGION"
-  expires_at=$(utc_after_seconds 600) || die "could not calculate presign deadline"
   url=$(aws s3 presign "$uri" --expires-in 600 --region "$AWS_REGION")
+  # Signing completed before the clock is read, so this is a conservative
+  # upper bound even when AWS chose a signature timestamp just before return.
+  expires_at=$(utc_after_seconds 600) || die "could not calculate presign deadline"
   publish_text_atomically "$key" "$LAST_SHARED_KEY_FILE" 0600
   printf '%s\nExpires no later than: %s\n' "$url" "$expires_at"
 }

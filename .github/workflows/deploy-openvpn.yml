@@ -215,7 +215,24 @@ jobs:
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             "ubuntu@$HOST_IP" \
-            'sudo systemctl is-active --quiet openvpn-course-firewall openvpn-server@course && sudo systemctl is-enabled --quiet openvpn-course-firewall openvpn-server@course && sudo ss -lun | grep -Eq "[:.]1194[[:space:]]" && test "$(sudo sysctl -n net.ipv4.ip_forward)" = 1 && sudo nft list table inet openvpn_course >/dev/null && sudo nft list table ip openvpn_course_nat >/dev/null'
+            'sudo bash -se' <<'REMOTE_CHECKS'
+          systemctl is-active --quiet openvpn-course-firewall openvpn-server@course
+          systemctl is-enabled --quiet openvpn-course-firewall openvpn-server@course
+          ss -lun | grep -Eq "[:.]1194[[:space:]]"
+          test "$(sysctl -n net.ipv4.ip_forward)" = 1
+          iptables --version | grep -Fq nf_tables
+          iptables -w 5 -t filter -C FORWARD -j DOCKER-USER
+          docker_user_rules=$(iptables -w 5 -t filter -S DOCKER-USER)
+          active_course_chain=$(printf '%s\n' "$docker_user_rules" | awk '$1 == "-A" && $2 == "DOCKER-USER" && $3 == "-m" && $4 == "comment" && $5 == "--comment" && $6 == "openvpn-course-forward" && $7 == "-j" && ($8 == "OPENVPN-COURSE-A" || $8 == "OPENVPN-COURSE-B") { print $8 }')
+          test "$(printf '%s\n' "$active_course_chain" | sed '/^$/d' | wc -l | tr -d ' ')" = 1
+          case "$active_course_chain" in
+            OPENVPN-COURSE-A|OPENVPN-COURSE-B) ;;
+            *) exit 1 ;;
+          esac
+          iptables -w 5 -t filter -S "$active_course_chain" >/dev/null
+          nft list table inet openvpn_course_input >/dev/null
+          nft list table ip openvpn_course_nat >/dev/null
+          REMOTE_CHECKS
       - name: Deployment summary
         env:
           PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}

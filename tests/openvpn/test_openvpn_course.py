@@ -482,7 +482,7 @@ def test_share_uses_random_key_and_exact_ten_minute_expiry(
     presign_index = next(
         i for i, line in enumerate(call_lines) if "s3 presign" in line
     )
-    assert deadline_index < presign_index
+    assert presign_index < deadline_index
     assert configured_path(course_env, "LAST_SHARED_KEY_FILE").read_text() == (
         "profiles/0123456789abcdef0123456789abcdef/course-vpn.ovpn\n"
     )
