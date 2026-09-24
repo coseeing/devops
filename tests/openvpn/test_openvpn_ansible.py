@@ -36,6 +36,46 @@ def test_playbook_uses_only_openvpn_role() -> None:
     assert "common/post-common.yml" not in rendered
 
 
+def test_openvpn_reload_notification_resolves_real_role_handler(tmp_path: Path) -> None:
+    """Catch a block name mistaken for a handler, without touching services."""
+    role = tmp_path / "roles" / "openvpn_server"
+    shutil.copytree(ROLE, role)
+    no_op = role / "tasks" / "no-op.yml"
+    no_op.write_text("[]\n")
+    playbook = tmp_path / "notify.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [{
+                "hosts": "localhost",
+                "gather_facts": False,
+                "tasks": [
+                    {"ansible.builtin.import_role": {
+                        "name": str(role), "tasks_from": "no-op",
+                    }},
+                    {"name": "Notify actual OpenVPN handler",
+                     "ansible.builtin.debug": {"msg": "simulate changed certificate"},
+                     "changed_when": True,
+                     "notify": "Reload course OpenVPN"},
+                    # Notification lookup happens on change. End before service actions.
+                    {"ansible.builtin.meta": "end_play"},
+                ],
+            }],
+            sort_keys=False,
+        )
+    )
+    env = {
+        **os.environ,
+        "ANSIBLE_LOCAL_TEMP": str(tmp_path / "local"),
+        "ANSIBLE_REMOTE_TEMP": str(tmp_path / "remote"),
+        "ANSIBLE_NOCOLOR": "1",
+    }
+    result = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook)],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_server_configuration_is_split_tunnel_and_secure() -> None:
     config = (ROLE / "templates/course.conf.j2").read_text()
     assert (
