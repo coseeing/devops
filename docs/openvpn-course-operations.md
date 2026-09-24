@@ -1,5 +1,7 @@
 # Course OpenVPN Operations
 
+[中文版：部署參數、S3、憑證、Mac 安裝與系統架構圖](openvpn-course-operations.zh-TW.md)
+
 This guide is for the operator of the shared OpenVPN service and for course
 participants using a Mac. Keep the values used for one deployment together:
 the VPN endpoint, the Linux host, the Windows subnet, and the VMS Portal
