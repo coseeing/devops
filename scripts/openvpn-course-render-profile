@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+script_directory() {
+  local source=${BASH_SOURCE[0]}
+  local directory
+  directory=$(cd -- "$(dirname -- "$source")" && pwd -P)
+  printf '%s\n' "$directory"
+}
+
+read_required_file() {
+  local path=$1 label=$2
+  [[ -f "$path" && ! -L "$path" ]] || die "missing $label: $path"
+}
+
+emit_file() {
+  local path=$1 line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line"
+  done <"$path"
+}
+
+[[ $# -eq 1 ]] || die "usage: render-profile CLIENT_CN"
+client_cn=$1
+[[ "$client_cn" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]] || die "invalid client CN"
+
+pki_dir=${PKI_DIR:-$(script_directory)}
+endpoint=${ENDPOINT:-}
+openvpn_port=${OPENVPN_PORT:-1194}
+openvpn_protocol=${OPENVPN_PROTOCOL:-udp}
+
+[[ -d "$pki_dir" && ! -L "$pki_dir" ]] || die "missing PKI directory: $pki_dir"
+[[ "$endpoint" =~ ^[A-Za-z0-9.-]+$ ]] || die "missing or invalid endpoint"
+[[ "$openvpn_port" =~ ^[0-9]+$ ]] || die "invalid OpenVPN port"
+(( 10#$openvpn_port >= 1 && 10#$openvpn_port <= 65535 )) || die "invalid OpenVPN port"
+[[ "$openvpn_protocol" == udp || "$openvpn_protocol" == tcp ]] || die "invalid OpenVPN protocol"
+
+ca_certificate=$pki_dir/pki/ca.crt
+client_certificate=$pki_dir/pki/issued/$client_cn.crt
+client_private_key=$pki_dir/pki/private/$client_cn.key
+tls_crypt_key=$pki_dir/tls-crypt.key
+
+read_required_file "$ca_certificate" "CA certificate"
+read_required_file "$client_certificate" "client certificate"
+read_required_file "$client_private_key" "client private key"
+read_required_file "$tls_crypt_key" "tls-crypt key"
+
+printf 'client\n'
+printf 'dev tun\n'
+printf 'proto %s\n' "$openvpn_protocol"
+printf 'remote %s %s\n' "$endpoint" "$openvpn_port"
+printf 'nobind\n'
+printf 'persist-key\n'
+printf 'persist-tun\n'
+printf 'remote-cert-tls server\n'
+printf 'tls-version-min 1.2\n'
+printf 'data-ciphers AES-256-GCM:AES-128-GCM\n'
+printf 'allow-compression no\n'
+printf 'verb 3\n'
+printf '<ca>\n'
+emit_file "$ca_certificate"
+printf '</ca>\n'
+printf '<cert>\n'
+emit_file "$client_certificate"
+printf '</cert>\n'
+printf '<key>\n'
+emit_file "$client_private_key"
+printf '</key>\n'
+printf '<tls-crypt>\n'
+emit_file "$tls_crypt_key"
+printf '</tls-crypt>\n'

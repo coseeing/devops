@@ -1,0 +1,23 @@
+port {{ openvpn_port }}
+proto {{ openvpn_protocol }}
+dev {{ openvpn_tunnel_device }}
+topology subnet
+server {{ openvpn_vpn_cidr | cidr_network }} {{ openvpn_vpn_cidr | cidr_netmask }}
+push "route {{ openvpn_windows_cidr | cidr_network }} {{ openvpn_windows_cidr | cidr_netmask }}"
+ca /etc/openvpn/server/ca.crt
+cert /etc/openvpn/server/course-server.crt
+key /etc/openvpn/server/course-server.key
+dh none
+crl-verify /etc/openvpn/server/crl.pem
+tls-crypt /etc/openvpn/server/tls-crypt.key
+verify-client-cert require
+tls-version-min 1.2
+data-ciphers AES-256-GCM:AES-128-GCM
+allow-compression no
+duplicate-cn
+keepalive 10 120
+persist-key
+persist-tun
+explicit-exit-notify 1
+status {{ openvpn_status_path }} 10
+verb 3

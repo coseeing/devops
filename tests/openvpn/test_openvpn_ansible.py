@@ -1,0 +1,977 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+ROLE = ROOT / "ansible_yaml/roles/openvpn_server"
+RENDERER = ROOT / "scripts/openvpn-course-render-profile"
+FIREWALL = ROOT / "scripts/openvpn-course-firewall"
+
+
+def load_role_tasks() -> list[dict[str, object]]:
+    return yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+
+
+def named_task(tasks: list[dict[str, object]], name: str) -> dict[str, object]:
+    for task in tasks:
+        if task.get("name") == name:
+            return task
+    raise AssertionError(f"missing task: {name}")
+
+
+def test_playbook_uses_only_openvpn_role() -> None:
+    playbook = yaml.safe_load(
+        (ROOT / "ansible_yaml/openvpn-server-playbook.yml").read_text()
+    )
+    assert playbook[0]["become"] is True
+    assert playbook[0]["roles"] == ["openvpn_server"]
+    rendered = str(playbook)
+    assert "common/pre-common.yml" not in rendered
+    assert "common/post-common.yml" not in rendered
+
+
+def test_server_configuration_is_split_tunnel_and_secure() -> None:
+    config = (ROLE / "templates/course.conf.j2").read_text()
+    assert (
+        'push "route {{ openvpn_windows_cidr | cidr_network }} '
+        '{{ openvpn_windows_cidr | cidr_netmask }}"'
+    ) in config
+    assert "duplicate-cn" in config
+    assert "tls-crypt" in config
+    assert "tls-version-min 1.2" in config
+    assert "data-ciphers AES-256-GCM:AES-128-GCM" in config
+    assert "allow-compression no" in config
+    assert "redirect-gateway" not in config
+    assert "dhcp-option" not in config
+    assert "client-to-client" not in config
+
+
+def test_client_profile_embeds_keys_and_verifies_server_purpose() -> None:
+    profile = (ROLE / "templates/course.ovpn.j2").read_text()
+    for block in ("<ca>", "<cert>", "<key>", "<tls-crypt>"):
+        assert block in profile
+    assert "remote-cert-tls server" in profile
+    assert "auth-user-pass" not in profile
+
+
+def test_role_preserves_active_cn_and_installs_profile_renderer() -> None:
+    tasks = (ROLE / "tasks/main.yml").read_text()
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    assert "slurp:" in tasks
+    assert defaults["openvpn_active_client_cn_file"].endswith("/active-client-cn")
+    assert "openvpn_active_client_cn_stat.stat.exists" in tasks
+    assert "scripts/openvpn-course-render-profile" in tasks
+    assert 'dest: "{{ openvpn_pki_dir }}/render-profile"' in tasks
+    assert 'SERVER_CRL_PATH=/etc/openvpn/server/crl.pem' in (
+        ROLE / "templates/openvpn-course.env.j2"
+    ).read_text()
+    assert 'LAST_SHARED_KEY_FILE=/var/lib/openvpn-course/last-shared-key' in (
+        ROLE / "templates/openvpn-course.env.j2"
+    ).read_text()
+
+
+def test_role_verifies_profile_bucket_with_no_log_sentinel_data() -> None:
+    tasks = load_role_tasks()
+    sentinel = named_task(
+        tasks, "Verify temporary profile bucket permissions with sentinel data"
+    )
+
+    assert sentinel["when"] == "openvpn_verify_s3 | bool"
+    assert sentinel["no_log"] is True
+    assert "current.ovpn" not in str(sentinel)
+
+    block_names = [str(task.get("name")) for task in sentinel["block"]]
+    assert block_names == [
+        "Create temporary OpenVPN profile bucket sentinel",
+        "Upload temporary OpenVPN profile bucket sentinel",
+        "Presign temporary OpenVPN profile bucket sentinel",
+        "Download temporary OpenVPN profile bucket sentinel",
+        "Compare temporary OpenVPN profile bucket sentinel",
+    ]
+    upload = sentinel["block"][1]["ansible.builtin.command"]["argv"]
+    presign = sentinel["block"][2]["ansible.builtin.command"]["argv"]
+    download = sentinel["block"][3]["ansible.builtin.get_url"]
+    compare = sentinel["block"][4]["ansible.builtin.command"]["argv"]
+    sentinel_key = (
+        "s3://{{ openvpn_profile_bucket }}/profiles/"
+        "sentinel-{{ ansible_date_time.epoch }}"
+    )
+    assert upload == [
+        "{{ openvpn_aws_cli_path }}",
+        "s3",
+        "cp",
+        "/tmp/openvpn-course-s3-sentinel",
+        sentinel_key,
+        "--only-show-errors",
+        "--region",
+        "{{ openvpn_aws_region }}",
+    ]
+    assert presign == [
+        "{{ openvpn_aws_cli_path }}",
+        "s3",
+        "presign",
+        sentinel_key,
+        "--expires-in",
+        "600",
+        "--region",
+        "{{ openvpn_aws_region }}",
+    ]
+    assert sentinel["block"][2]["register"] == "openvpn_sentinel_url"
+    assert download["url"] == "{{ openvpn_sentinel_url.stdout }}"
+    assert compare == [
+        "cmp",
+        "--silent",
+        "/tmp/openvpn-course-s3-sentinel",
+        "/tmp/openvpn-course-s3-sentinel.downloaded",
+    ]
+
+    always_names = [str(task.get("name")) for task in sentinel["always"]]
+    assert always_names == [
+        "Delete temporary OpenVPN profile bucket sentinel",
+        "Remove temporary OpenVPN profile bucket sentinel files",
+    ]
+    cleanup = sentinel["always"][0]
+    assert cleanup["ansible.builtin.command"]["argv"] == [
+        "{{ openvpn_aws_cli_path }}",
+        "s3",
+        "rm",
+        sentinel_key,
+        "--only-show-errors",
+        "--region",
+        "{{ openvpn_aws_region }}",
+    ]
+    assert cleanup["failed_when"] is False
+
+
+def test_role_installs_scoped_firewall_before_openvpn_without_regressing_rollback() -> None:
+    tasks = load_role_tasks()
+    names = [str(task.get("name")) for task in tasks]
+    activation_index = names.index("Activate OpenVPN artifacts transactionally")
+    activation = named_task(tasks, "Activate OpenVPN artifacts transactionally")
+    activation_names = [str(task.get("name")) for task in activation["block"]]
+    firewall_validate_index = activation_names.index("Validate staged course firewall rules")
+    firewall_install_index = activation_names.index("Install validated active course firewall rules")
+    firewall_start_index = activation_names.index("Enable and start course firewall")
+    firewall_reload_index = activation_names.index("Reload course firewall before OpenVPN")
+    openvpn_start_index = activation_names.index("Enable and start course OpenVPN")
+
+    assert names.index("Render staged course firewall rules") < activation_index
+    assert firewall_install_index < firewall_start_index < firewall_reload_index
+    assert firewall_reload_index < openvpn_start_index
+
+    tasks = (ROLE / "tasks/main.yml").read_text()
+    handlers = (ROLE / "handlers/main.yml").read_text()
+    combined = f"{tasks}\n{handlers}"
+    assert "nftables" in tasks
+    assert "scripts/openvpn-course-firewall" in tasks
+    assert "course-firewall.nft.j2" in tasks
+    assert "dest: /etc/openvpn/course-firewall.nft.staged" in tasks
+    assert "argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]" in tasks
+    assert "Reload course firewall" in handlers
+    assert "flush ruleset" not in combined
+    assert "iptables" in tasks
+    assert "DOCKER-USER" in FIREWALL.read_text()
+    assert "docker service" not in combined.lower()
+    preflight_index = activation_names.index("Preflight Docker user firewall integration")
+    persist_index = activation_names.index("Persist OpenVPN course IP forwarding")
+    assert firewall_install_index < preflight_index < persist_index < firewall_start_index
+
+
+def test_activation_rollback_restores_captured_service_state() -> None:
+    tasks = load_role_tasks()
+    names = [str(task.get("name")) for task in tasks]
+    activation_index = names.index("Activate OpenVPN artifacts transactionally")
+    assert names.index("Capture prior OpenVPN active state") < activation_index
+    assert names.index("Capture prior OpenVPN enabled state") < activation_index
+    assert names.index("Resolve previous active OpenVPN file presence") < activation_index
+
+    tasks_text = (ROLE / "tasks/main.yml").read_text()
+    assert "openvpn_previous_server_config" not in tasks_text
+    assert "openvpn_prior_active_state" in tasks_text
+    assert "openvpn_prior_enabled_state" in tasks_text
+    assert "openvpn_had_previous_active_files" in tasks_text
+
+    activation = named_task(tasks, "Activate OpenVPN artifacts transactionally")
+    rescue_names = [str(task.get("name")) for task in activation["rescue"]]
+    assert "Restore prior OpenVPN enabled state" in rescue_names
+    assert "Restore active OpenVPN service after rollback" in rescue_names
+    assert "Stop OpenVPN service after rollback" in rescue_names
+    assert "Restore prior course firewall enabled state" in rescue_names
+    assert "Reload active course firewall after rollback" in rescue_names
+    assert "Stop course firewall after rollback" in rescue_names
+
+
+def test_ip_forward_changes_are_rolled_back_with_activation() -> None:
+    tasks = load_role_tasks()
+    names = [str(task.get("name")) for task in tasks]
+    activation_index = names.index("Activate OpenVPN artifacts transactionally")
+    assert names.index("Capture prior IP forwarding runtime value") < activation_index
+    assert names.index("Check prior IP forwarding sysctl file") < activation_index
+    assert names.index("Read prior IP forwarding sysctl file") < activation_index
+    assert "Persist OpenVPN course IP forwarding" not in names
+    assert "Apply OpenVPN course IP forwarding" not in names
+
+    activation = named_task(tasks, "Activate OpenVPN artifacts transactionally")
+    activation_names = [str(task.get("name")) for task in activation["block"]]
+    persist_index = activation_names.index("Persist OpenVPN course IP forwarding")
+    apply_index = activation_names.index("Apply OpenVPN course IP forwarding")
+    firewall_start_index = activation_names.index("Enable and start course firewall")
+    assert persist_index < apply_index < firewall_start_index
+
+    rescue_names = [str(task.get("name")) for task in activation["rescue"]]
+    assert "Restore previous IP forwarding sysctl file" in rescue_names
+    assert "Remove IP forwarding sysctl file created by failed deploy" in rescue_names
+    assert "Restore prior IP forwarding runtime value" in rescue_names
+
+    tasks_text = (ROLE / "tasks/main.yml").read_text()
+    assert "openvpn_prior_ip_forward_value" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat" in tasks_text
+    assert "openvpn_prior_ip_forward_file_content.content | b64decode" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat.stat.uid" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat.stat.gid" in tasks_text
+    assert "openvpn_prior_ip_forward_file_stat.stat.mode" in tasks_text
+    assert "net.ipv4.ip_forward={{ openvpn_prior_ip_forward_value.stdout | trim }}" in tasks_text
+    assert "sysctl, --system" not in tasks_text
+    assert "net.ipv6" not in tasks_text
+
+
+def test_firewall_allows_only_rdp_to_windows_and_drops_other_vpn_traffic() -> None:
+    rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
+    assert "table inet openvpn_course_input" in rules
+    assert 'iifname "tun-course" drop' in rules
+    assert "table ip openvpn_course_nat" in rules
+    assert "type nat hook postrouting priority srcnat; policy accept;" in rules
+    assert 'ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 masquerade' in rules
+    assert "table inet openvpn_course {" not in rules
+    assert "flush ruleset" not in rules
+    assert "0.0.0.0/0" not in rules
+    assert "openvpn_vpc_cidr" not in rules
+
+
+def test_firewall_drops_new_return_path_traffic_before_vpn_ingress_rules() -> None:
+    helper = FIREWALL.read_text()
+    exact_chain = helper[
+        helper.index("configure_exact_chain() {") : helper.index("remove_chain() {")
+    ]
+    established = exact_chain.index("-o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+    return_drop = exact_chain.index("-o tun-course -j DROP")
+    exact_allow = exact_chain.index(
+        "-i tun-course -s \"$VPN_CIDR\" -d \"$WINDOWS_CIDR\" -p tcp --dport 3389 -j ACCEPT"
+    )
+    vpn_ingress_drop = exact_chain.index("-i tun-course -j DROP")
+
+    assert established < return_drop < exact_allow < vpn_ingress_drop
+
+
+def test_firewall_filter_uses_docker_user_with_exact_rdp_rules() -> None:
+    rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
+    helper = FIREWALL.read_text()
+
+    assert "table inet openvpn_course_input" in rules
+    assert 'iifname "tun-course" drop' in rules
+    assert "table ip openvpn_course_nat" in rules
+    assert "table inet openvpn_course {" not in rules
+    assert "type filter hook forward" not in rules
+    assert 'ip saddr {{ openvpn_vpn_cidr }} ip daddr {{ openvpn_windows_cidr }} tcp dport 3389 masquerade' in rules
+
+    assert "DOCKER-USER" in helper
+    assert "nf_tables" in helper
+    assert "OPENVPN-COURSE" in helper
+    assert "openvpn-course-forward" in helper
+    exact_chain = helper[
+        helper.index("configure_exact_chain() {") : helper.index("remove_chain() {")
+    ]
+    established = exact_chain.index("-o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+    return_drop = exact_chain.index("-o tun-course -j DROP")
+    exact_allow = exact_chain.index(
+        "-i tun-course -s \"$VPN_CIDR\" -d \"$WINDOWS_CIDR\" -p tcp --dport 3389 -j ACCEPT"
+    )
+    ingress_drop = exact_chain.index("-i tun-course -j DROP")
+    assert established < return_drop < exact_allow < ingress_drop
+    assert "-F DOCKER-USER" not in helper
+    assert "flush ruleset" not in helper
+    assert "systemctl restart docker" not in helper
+
+
+def test_firewall_preflight_requires_forward_link_to_docker_user_before_nat_load() -> None:
+    helper = FIREWALL.read_text()
+    preflight = helper.index("preflight_docker_user")
+    replace_nat = helper.index("replace_tables")
+    assert preflight < replace_nat
+    assert 'iptables_command -C FORWARD -j "$DOCKER_USER_CHAIN"' in helper
+    assert "DOCKER-USER integration unavailable" in helper
+
+
+def test_aws_cli_bootstrap_pins_architecture_and_verifies_aws_signature_before_install() -> None:
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    tasks = load_role_tasks()
+    install = named_task(tasks, "Install pinned AWS CLI v2")
+    block = install["block"]
+    names = [str(task.get("name")) for task in block]
+
+    assert defaults["openvpn_aws_cli_version"] == "2.27.41"
+    assert defaults["openvpn_aws_cli_signer_fingerprint"] == "FB5DB77FD5C118B80511ADA8A6310ACC4672475C"
+    assert "x86_64" in str(block)
+    assert "aarch64" in str(block)
+    assert "awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip" in str(block)
+    assert "awscli-exe-linux-{{ openvpn_aws_cli_arch }}-{{ openvpn_aws_cli_version }}.zip.sig" in str(block)
+    assert "Reject unsupported AWS CLI architecture" in names
+    assert "Verify pinned AWS CLI signer fingerprint" in names
+    assert "Verify AWS CLI v2 installer signature" in names
+    assert names.index("Reject unsupported AWS CLI architecture") < names.index(
+        "Create AWS CLI installer directory"
+    )
+    assert names.index("Verify pinned AWS CLI signer fingerprint") < names.index(
+        "Unpack AWS CLI v2 installer"
+    )
+    assert names.index("Verify AWS CLI v2 installer signature") < names.index(
+        "Unpack AWS CLI v2 installer"
+    ) < names.index("Run AWS CLI v2 installer")
+    assert "openvpn_aws_cli_signer_fingerprint" in str(block)
+    assert (ROLE / "files/aws-cli-public-key.asc").is_file()
+
+
+def test_aws_cli_existing_versions_require_the_exact_v2_pin_before_selection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tasks = load_role_tasks()
+    inspect = named_task(tasks, "Inspect selected AWS CLI version")
+    decide = named_task(tasks, "Decide whether pinned AWS CLI installer is required")
+    install = named_task(tasks, "Install pinned AWS CLI v2")
+    verify = named_task(tasks, "Verify installed AWS CLI v2 version")
+    select = named_task(tasks, "Select verified AWS CLI path")
+
+    assert inspect["failed_when"] is False
+    assert "aws-cli/" in str(decide)
+    assert "openvpn_aws_cli_version" in str(decide)
+    assert "regex_escape" in str(decide)
+    assert "openvpn_aws_cli_existing_path == ''" in str(decide)
+    assert "openvpn_aws_cli_existing_version.rc | default(1) != 0" in str(decide)
+    assert install["when"] == "openvpn_aws_cli_installer_required | bool"
+    assert "creates" not in str(install)
+    verification = verify["ansible.builtin.assert"]["that"]
+    assert verification[:2] == [
+        "openvpn_aws_cli_installed.stat.exists",
+        "openvpn_aws_cli_installed_version.rc == 0",
+    ]
+    assert "regex_escape" in verification[2]
+    assert "aws-cli/" in verification[2]
+    assert verify["when"] == "openvpn_aws_cli_installer_required | bool"
+    assert select["ansible.builtin.set_fact"]["openvpn_aws_cli_path"] == (
+        "{{ '/usr/local/bin/aws' if openvpn_aws_cli_installer_required else "
+        "openvpn_aws_cli_existing_path }}"
+    )
+
+    # Run the role's actual Jinja condition. AWS CLI prints its version to
+    # stdout or stderr depending on the installed release and platform.
+    monkeypatch.setenv("ANSIBLE_LOCAL_TEMP", str(tmp_path / "ansible-local"))
+    monkeypatch.setenv("ANSIBLE_REMOTE_TEMP", str(tmp_path / "ansible-remote"))
+    from ansible._internal._datatag._tags import TrustedAsTemplate
+    from ansible.module_utils._internal._datatag import AnsibleTagHelper
+    from ansible.parsing.dataloader import DataLoader
+    from ansible.template import Templar
+
+    expression = decide["ansible.builtin.set_fact"][
+        "openvpn_aws_cli_installer_required"
+    ]
+
+    def installer_required(path: str, rc: int, stdout: str, stderr: str) -> bool:
+        templar = Templar(
+            loader=DataLoader(),
+            variables={
+                "openvpn_aws_cli_existing_path": path,
+                "openvpn_aws_cli_existing_version": {
+                    "rc": rc,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                },
+                "openvpn_aws_cli_version": "2.27.41",
+            },
+        )
+        return bool(
+            templar.template(AnsibleTagHelper.tag(expression, TrustedAsTemplate()))
+        )
+
+    assert not installer_required(
+        "/usr/bin/aws", 0, "", "aws-cli/2.27.41 Python/3.12 Linux/6.8 exe/x86_64"
+    )
+    assert installer_required(
+        "/usr/bin/aws", 0, "aws-cli/2.27.40 Python/3.12 Linux/6.8 exe/x86_64", ""
+    )
+    assert installer_required(
+        "/usr/bin/aws", 0, "aws-cli/1.32.0 Python/3.12 Linux/6.8 botocore/1.34.0", ""
+    )
+    assert installer_required("", 1, "", "")
+
+
+def test_role_precreates_root_owned_mutation_lock_and_exposes_a_test_override() -> None:
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    tasks = (ROLE / "tasks/main.yml").read_text()
+    environment = (ROLE / "templates/openvpn-course.env.j2").read_text()
+    command = (ROOT / "scripts/openvpn-course").read_text()
+
+    assert defaults["openvpn_mutation_lock_path"] == "/run/lock/openvpn-course.lock"
+    assert "MUTATION_LOCK_PATH={{ openvpn_mutation_lock_path | quote }}" in environment
+    assert "Create root-owned OpenVPN mutation lock" in tasks
+    assert "mode: \"0600\"" in tasks
+    assert "OPENVPN_COURSE_LOCK_PATH" in command
+    assert "flock -n" in command
+
+
+def test_firewall_unit_is_required_scoped_and_starts_before_openvpn() -> None:
+    unit = (ROLE / "templates/openvpn-course-firewall.service.j2").read_text()
+    assert "Before=openvpn-server@course.service" in unit
+    assert "RequiredBy=openvpn-server@course.service" in unit
+    assert "ExecStart=/usr/local/libexec/openvpn-course-firewall apply" in unit
+    assert "ExecReload=/usr/local/libexec/openvpn-course-firewall reload" in unit
+    assert "ExecStop=/usr/local/libexec/openvpn-course-firewall remove" in unit
+    assert "WantedBy=multi-user.target" in unit
+    assert "flush ruleset" not in unit
+
+
+def write_fake_nft(tmp_path: Path) -> tuple[Path, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    mock_bin = tmp_path / "bin"
+    mock_bin.mkdir()
+    log = tmp_path / "nft-calls.log"
+    log.touch()
+    batch_dir = tmp_path / "nft-batches"
+    batch_dir.mkdir()
+    nft = mock_bin / "nft"
+    nft.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >>\"${FAKE_NFT_LOG:?}\"\n"
+        "case \"$*\" in\n"
+        "  'list table inet openvpn_course')\n"
+        "    [[ \"${FAKE_NFT_HAS_INET:-1}\" == 1 ]] || exit 1\n"
+        "    ;;\n"
+        "  'list table inet openvpn_course_input')\n"
+        "    [[ \"${FAKE_NFT_HAS_INPUT:-1}\" == 1 ]] || exit 1\n"
+        "    ;;\n"
+        "  'list table ip openvpn_course_nat')\n"
+        "    [[ \"${FAKE_NFT_HAS_NAT:-1}\" == 1 ]] || exit 1\n"
+        "    ;;\n"
+        "  'delete table inet openvpn_course'|'delete table inet openvpn_course_input'|'delete table ip openvpn_course_nat')\n"
+        "    ;;\n"
+        "  --check\\ --file*)\n"
+        "    if [[ \"${FAKE_NFT_FAIL_CHECK:-0}\" == 1 ]]; then exit 33; fi\n"
+        "    if [[ \"${3:-}\" != \"${OPENVPN_COURSE_FIREWALL_RULES:-}\" && -f \"${3:-}\" ]] && grep -Fq include \"$3\"; then\n"
+        "      cp \"$3\" \"${FAKE_NFT_BATCH_DIR:?}/checked-batch.nft\"\n"
+        "    fi\n"
+        "    ;;\n"
+        "  --file*)\n"
+        "    if [[ -f \"${2:-}\" ]] && grep -Fq include \"$2\"; then cp \"$2\" \"${FAKE_NFT_BATCH_DIR:?}/loaded-batch.nft\"; fi\n"
+        "    if [[ -f \"${2:-}\" ]] && grep -Fq 'delete table' \"$2\" && ! grep -Fq include \"$2\"; then cp \"$2\" \"${FAKE_NFT_BATCH_DIR:?}/removed-batch.nft\"; fi\n"
+        "    if [[ \"${FAKE_NFT_FAIL_LOAD:-0}\" == 1 ]]; then exit 34; fi\n"
+        "    ;;\n"
+        "  *)\n"
+        "    exit 97\n"
+        "    ;;\n"
+        "esac\n"
+    )
+    nft.chmod(0o755)
+    return mock_bin, log, batch_dir
+
+
+def write_fake_iptables(tmp_path: Path, mock_bin: Path) -> Path:
+    log = tmp_path / "iptables-calls.log"
+    log.touch()
+    iptables = mock_bin / "iptables"
+    iptables.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >>\"${FAKE_IPTABLES_LOG:?}\"\n"
+        "if [[ \"$*\" == --version ]]; then\n"
+        "  printf 'iptables v1.8.9 (nf_tables)\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == '-w 5 -t filter -S DOCKER-USER' ]]; then\n"
+        "  [[ \"${FAKE_IPTABLES_NO_DOCKER_USER:-0}\" == 1 ]] && exit 1\n"
+        "  printf '%s\\n' '-N DOCKER-USER'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == '-w 5 -t filter -S FORWARD' ]]; then\n"
+        "  if [[ \"${FAKE_IPTABLES_FORWARD_DROP_FIRST:-0}\" == 1 ]]; then\n"
+        "    printf '%s\\n' '-P FORWARD DROP' '-A FORWARD -j DROP' '-A FORWARD -j DOCKER-USER'\n"
+        "  else\n"
+        "    printf '%s\\n' '-P FORWARD DROP' '-A FORWARD -j DOCKER-USER' '-A FORWARD -j DROP'\n"
+        "  fi\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == '-w 5 -t filter -C FORWARD -j DOCKER-USER' ]]; then\n"
+        "  [[ \"${FAKE_IPTABLES_NO_FORWARD_DOCKER_USER:-0}\" == 1 ]] && exit 1\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == *' -C '* ]]; then\n"
+        "  exit 1\n"
+        "fi\n"
+        "if [[ \"$*\" == *' -S OPENVPN-COURSE'* ]]; then\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+    iptables.chmod(0o755)
+    return log
+
+
+def firewall_env(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path, Path, Path]:
+    mock_bin, log, batch_dir = write_fake_nft(tmp_path)
+    iptables_log = write_fake_iptables(tmp_path, mock_bin)
+    rules = tmp_path / "course-firewall.nft"
+    rules.write_text(
+        "table inet openvpn_course {}\n"
+        "table ip openvpn_course_nat {}\n"
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{mock_bin}:{os.environ['PATH']}",
+        "OPENVPN_COURSE_FIREWALL_RULES": str(rules),
+        "FAKE_NFT_LOG": str(log),
+        "FAKE_NFT_BATCH_DIR": str(batch_dir),
+        "FAKE_IPTABLES_LOG": str(iptables_log),
+        "OPENVPN_COURSE_FIREWALL_VPN_CIDR": "10.250.0.0/24",
+        "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR": "10.0.8.0/24",
+        **overrides,
+    }
+    return env, rules, log, batch_dir
+
+
+def run_firewall(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(FIREWALL), *args],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_firewall_helper_apply_and_reload_replace_scoped_tables_atomically(
+    tmp_path: Path,
+) -> None:
+    for command in ("apply", "reload"):
+        env, rules, log, batch_dir = firewall_env(tmp_path / command)
+
+        result = run_firewall(env, command)
+
+        assert result.returncode == 0, result.stderr
+        calls = log.read_text().splitlines()
+        assert f"--check --file {rules}" not in calls
+        assert any(call.startswith("--file ") for call in calls)
+        expected_batch = (
+            "delete table inet openvpn_course\n"
+            "delete table inet openvpn_course_input\n"
+            "delete table ip openvpn_course_nat\n"
+            f"include \"{rules}\"\n"
+        )
+        assert (batch_dir / "checked-batch.nft").read_text() == expected_batch
+        assert (batch_dir / "loaded-batch.nft").read_text() == expected_batch
+        iptables_calls = (tmp_path / command / "iptables-calls.log").read_text()
+        assert "-S FORWARD" in iptables_calls
+        assert "-I DOCKER-USER 1 -m comment --comment openvpn-course-forward -j OPENVPN-COURSE-GUARD" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -o tun-course -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -o tun-course -j DROP" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -i tun-course -s 10.250.0.0/24 -d 10.0.8.0/24 -p tcp --dport 3389 -j ACCEPT" in iptables_calls
+        assert "-A OPENVPN-COURSE-A -i tun-course -j DROP" in iptables_calls
+        assert "-I DOCKER-USER 1 -m comment --comment openvpn-course-forward -j OPENVPN-COURSE-A" in iptables_calls
+        assert "-F DOCKER-USER" not in iptables_calls
+
+
+def test_firewall_helper_remove_deletes_only_scoped_tables_atomically(tmp_path: Path) -> None:
+    env, _rules, log, batch_dir = firewall_env(tmp_path)
+
+    result = run_firewall(env, "remove")
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines()[:3] == [
+        "list table inet openvpn_course",
+        "list table inet openvpn_course_input",
+        "list table ip openvpn_course_nat",
+    ]
+    assert (batch_dir / "removed-batch.nft").read_text() == (
+        "delete table inet openvpn_course\n"
+        "delete table inet openvpn_course_input\n"
+        "delete table ip openvpn_course_nat\n"
+    )
+    iptables_calls = (tmp_path / "iptables-calls.log").read_text()
+    assert "-F DOCKER-USER" not in iptables_calls
+    assert "-X DOCKER-USER" not in iptables_calls
+
+
+def test_firewall_helper_remove_succeeds_when_scoped_tables_are_absent(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(
+        tmp_path,
+        FAKE_NFT_HAS_INET="0",
+        FAKE_NFT_HAS_INPUT="0",
+        FAKE_NFT_HAS_NAT="0",
+    )
+
+    result = run_firewall(env, "remove")
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines()[-3:] == [
+        "list table inet openvpn_course",
+        "list table inet openvpn_course_input",
+        "list table ip openvpn_course_nat",
+    ]
+
+
+def test_firewall_helper_remove_warns_that_all_scoped_tables_were_attempted(
+    tmp_path: Path,
+) -> None:
+    env, _rules, _log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_NO_DOCKER_USER="1"
+    )
+
+    result = run_firewall(env, "remove")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "DOCKER-USER unavailable; course input, NAT, and legacy table cleanup was attempted"
+        in result.stderr
+    )
+
+
+def test_firewall_helper_validation_failure_does_not_remove_or_load_tables(
+    tmp_path: Path,
+) -> None:
+    env, rules, log, batch_dir = firewall_env(tmp_path, FAKE_NFT_FAIL_CHECK="1")
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert f"--check --file {rules}" not in log.read_text().splitlines()
+    assert sum(
+        line.startswith("--check --file ")
+        for line in log.read_text().splitlines()
+    ) == 1
+    assert not any(
+        line.startswith("--file ") for line in log.read_text().splitlines()
+    )
+    assert "DOCKER-USER integration unavailable" not in result.stderr
+    assert not list(batch_dir.iterdir())
+
+
+def test_firewall_helper_fails_closed_before_nat_when_docker_user_is_missing(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_NO_DOCKER_USER="1"
+    )
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert "DOCKER-USER integration unavailable" in result.stderr
+    assert log.read_text() == ""
+    assert "-I DOCKER-USER" not in (tmp_path / "iptables-calls.log").read_text()
+
+
+def test_firewall_helper_fails_closed_before_nat_when_forward_is_not_linked_to_docker_user(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_NO_FORWARD_DOCKER_USER="1"
+    )
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert "FORWARD does not jump to Docker's DOCKER-USER chain" in result.stderr
+    assert log.read_text() == ""
+    assert "-I DOCKER-USER" not in (tmp_path / "iptables-calls.log").read_text()
+
+
+def test_firewall_helper_fails_closed_before_nat_when_docker_user_is_not_first_forward_rule(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(
+        tmp_path, FAKE_IPTABLES_FORWARD_DROP_FIRST="1"
+    )
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert "FORWARD must begin with Docker's DOCKER-USER jump" in result.stderr
+    assert log.read_text() == ""
+    assert "-I DOCKER-USER" not in (tmp_path / "iptables-calls.log").read_text()
+
+
+def test_firewall_helper_preflight_accepts_docker_user_as_the_first_forward_rule(
+    tmp_path: Path,
+) -> None:
+    env, _rules, _log, _batch_dir = firewall_env(tmp_path)
+
+    result = run_firewall(env, "preflight")
+
+    assert result.returncode == 0, result.stderr
+    assert "-S FORWARD" in (tmp_path / "iptables-calls.log").read_text()
+
+
+def test_firewall_helper_load_failure_has_no_standalone_delete_before_failure(
+    tmp_path: Path,
+) -> None:
+    env, rules, log, batch_dir = firewall_env(tmp_path, FAKE_NFT_FAIL_LOAD="1")
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode != 0
+    assert "delete table inet openvpn_course" not in log.read_text().splitlines()
+    assert "delete table ip openvpn_course_nat" not in log.read_text().splitlines()
+    assert (batch_dir / "loaded-batch.nft").read_text() == (
+        "delete table inet openvpn_course\n"
+        "delete table inet openvpn_course_input\n"
+        "delete table ip openvpn_course_nat\n"
+        f"include \"{rules}\"\n"
+    )
+
+
+def test_firewall_helper_defaults_to_fixed_production_rules_path(
+    tmp_path: Path,
+) -> None:
+    mock_bin, log, batch_dir = write_fake_nft(tmp_path)
+    iptables_log = write_fake_iptables(tmp_path, mock_bin)
+    env = {
+        **os.environ,
+        "PATH": f"{mock_bin}:{os.environ['PATH']}",
+        "FAKE_NFT_LOG": str(log),
+        "FAKE_NFT_BATCH_DIR": str(batch_dir),
+        "FAKE_IPTABLES_LOG": str(iptables_log),
+        "OPENVPN_COURSE_FIREWALL_VPN_CIDR": "10.250.0.0/24",
+        "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR": "10.0.8.0/24",
+    }
+
+    result = run_firewall(env, "apply")
+
+    assert result.returncode == 0, result.stderr
+    assert "--check --file /etc/openvpn/course-firewall.nft" not in log.read_text()
+    assert (batch_dir / "checked-batch.nft").read_text().endswith(
+        'include "/etc/openvpn/course-firewall.nft"\n'
+    )
+    assert (batch_dir / "loaded-batch.nft").read_text().endswith(
+        'include "/etc/openvpn/course-firewall.nft"\n'
+    )
+
+
+def test_firewall_helper_rejects_invalid_cli_without_touching_nft(
+    tmp_path: Path,
+) -> None:
+    env, _rules, log, _batch_dir = firewall_env(tmp_path)
+
+    result = run_firewall(env, "status")
+
+    assert result.returncode == 2
+    assert "usage: openvpn-course-firewall {preflight|apply|reload|remove}" in result.stderr
+    assert log.read_text() == ""
+
+
+@pytest.mark.skipif(
+    os.environ.get("OPENVPN_RUN_NETNS_TEST") != "1"
+    or os.geteuid() != 0
+    or shutil.which("ip") is None
+    or shutil.which("iptables") is None
+    or shutil.which("nft") is None,
+    reason="optional namespace integration test requires root, iproute2, nftables, iptables-nft, and OPENVPN_RUN_NETNS_TEST=1",
+)
+def test_optional_namespace_integration_uses_docker_user_before_default_forward_drop(
+    tmp_path: Path,
+) -> None:
+    if "nf_tables" not in subprocess.run(
+        ["iptables", "--version"], text=True, capture_output=True, check=True
+    ).stdout:
+        pytest.skip("optional namespace integration requires the iptables-nft backend")
+
+    namespace = f"openvpn-course-{os.getpid()}"
+    rules = tmp_path / "course-firewall.nft"
+    rules.write_text(
+        "table ip openvpn_course_nat {\n"
+        "  chain postrouting { type nat hook postrouting priority srcnat; policy accept;\n"
+        "    ip saddr 10.250.0.0/24 ip daddr 10.0.8.0/24 tcp dport 3389 masquerade\n"
+        "  }\n"
+        "}\n"
+    )
+    subprocess.run(["ip", "netns", "add", namespace], check=True)
+    try:
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-N", "DOCKER-USER"],
+            check=True,
+        )
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-A", "FORWARD", "-j", "DROP"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "iptables",
+                "-A",
+                "FORWARD",
+                "-j",
+                "DOCKER-USER",
+            ],
+            check=True,
+        )
+        bad_preflight = subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "env",
+                f"OPENVPN_COURSE_FIREWALL_RULES={rules}",
+                "OPENVPN_COURSE_FIREWALL_VPN_CIDR=10.250.0.0/24",
+                "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR=10.0.8.0/24",
+                "bash",
+                str(FIREWALL),
+                "preflight",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert bad_preflight.returncode != 0
+        assert "FORWARD must begin with Docker's DOCKER-USER jump" in bad_preflight.stderr
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-F", "FORWARD"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "iptables",
+                "-A",
+                "FORWARD",
+                "-j",
+                "DOCKER-USER",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-A", "FORWARD", "-j", "DROP"],
+            check=True,
+        )
+        preflight = subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "env",
+                f"OPENVPN_COURSE_FIREWALL_RULES={rules}",
+                "OPENVPN_COURSE_FIREWALL_VPN_CIDR=10.250.0.0/24",
+                "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR=10.0.8.0/24",
+                "bash",
+                str(FIREWALL),
+                "preflight",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert preflight.returncode == 0, preflight.stderr
+        result = subprocess.run(
+            [
+                "ip",
+                "netns",
+                "exec",
+                namespace,
+                "env",
+                f"OPENVPN_COURSE_FIREWALL_RULES={rules}",
+                "OPENVPN_COURSE_FIREWALL_VPN_CIDR=10.250.0.0/24",
+                "OPENVPN_COURSE_FIREWALL_WINDOWS_CIDR=10.0.8.0/24",
+                "bash",
+                str(FIREWALL),
+                "apply",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        docker_user = subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-S", "DOCKER-USER"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        course_chain = subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-S", "OPENVPN-COURSE-A"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert "openvpn-course-forward" in docker_user
+        assert "-A OPENVPN-COURSE-A -o tun-course -j DROP" in course_chain
+        forward = subprocess.run(
+            ["ip", "netns", "exec", namespace, "iptables", "-S", "FORWARD"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.splitlines()
+        assert forward.index("-A FORWARD -j DOCKER-USER") < forward.index(
+            "-A FORWARD -j DROP"
+        )
+    finally:
+        subprocess.run(["ip", "netns", "del", namespace], check=False)
+
+
+def write_renderer_fixture(tmp_path: Path) -> dict[str, str]:
+    pki = tmp_path / "pki"
+    (pki / "pki/issued").mkdir(parents=True)
+    (pki / "pki/private").mkdir()
+    (pki / "pki/ca.crt").write_text("CA CERT\n")
+    (pki / "pki/issued/course-shared.crt").write_text("CLIENT CERT\n")
+    (pki / "pki/private/course-shared.key").write_text("CLIENT KEY\n")
+    (pki / "tls-crypt.key").write_text("TLS CRYPT KEY\n")
+    return {
+        **os.environ,
+        "PKI_DIR": str(pki),
+        "ENDPOINT": "vpn.example.org",
+        "OPENVPN_PORT": "443",
+        "OPENVPN_PROTOCOL": "tcp",
+    }
+
+
+def test_profile_renderer_embeds_requested_client_material(tmp_path: Path) -> None:
+    result = subprocess.run(
+        ["bash", str(RENDERER), "course-shared"],
+        env=write_renderer_fixture(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "remote vpn.example.org 443" in result.stdout
+    assert "proto tcp" in result.stdout
+    for expected in ("CA CERT", "CLIENT CERT", "CLIENT KEY", "TLS CRYPT KEY"):
+        assert expected in result.stdout
+    assert "CLIENT KEY" not in result.stderr
+
+
+def test_profile_renderer_rejects_unsafe_client_cn(tmp_path: Path) -> None:
+    result = subprocess.run(
+        ["bash", str(RENDERER), "../course-shared"],
+        env=write_renderer_fixture(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "invalid client CN" in result.stderr
+    assert result.stdout == ""
