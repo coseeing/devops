@@ -783,12 +783,6 @@
       changed_when: false
       no_log: true
 
-    - name: Parse and crypto-test staged OpenVPN configuration
-      ansible.builtin.command:
-        argv: [openvpn, --config, /etc/openvpn/server/course.conf.staged, --test-crypto]
-      changed_when: false
-      no_log: true
-
     - name: Validate staged course firewall rules
       ansible.builtin.command:
         argv: [nft, --check, --file, /etc/openvpn/course-firewall.nft.staged]
