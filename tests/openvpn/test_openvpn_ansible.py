@@ -92,6 +92,30 @@ def test_server_configuration_is_split_tunnel_and_secure() -> None:
     assert "client-to-client" not in config
 
 
+def test_activation_does_not_use_static_key_crypto_test_for_tls_server() -> None:
+    tasks = load_role_tasks()
+    activation = named_task(tasks, "Activate OpenVPN artifacts transactionally")
+    openvpn_commands = [
+        task["ansible.builtin.command"]["argv"]
+        for task in activation["block"]
+        if "ansible.builtin.command" in task
+        and task["ansible.builtin.command"]["argv"][0] == "openvpn"
+    ]
+
+    assert all("--test-crypto" not in argv for argv in openvpn_commands)
+    assert any(
+        task.get("name") == "Enable and start course OpenVPN"
+        and task["ansible.builtin.systemd_service"]["state"] == "started"
+        for task in activation["block"]
+    )
+    assert any(
+        task.get("name") == "Verify course OpenVPN service is active"
+        and task["ansible.builtin.command"]["argv"]
+        == ["systemctl", "is-active", "--quiet", "openvpn-server@course"]
+        for task in activation["block"]
+    )
+
+
 def test_client_profile_embeds_keys_and_verifies_server_purpose() -> None:
     profile = (ROLE / "templates/course.ovpn.j2").read_text()
     for block in ("<ca>", "<cert>", "<key>", "<tls-crypt>"):
