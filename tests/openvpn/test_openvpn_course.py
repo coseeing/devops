@@ -76,6 +76,18 @@ def mock_commands(tmp_path: Path, course_env: dict[str, str]) -> Path:
             "if [[ $(basename \"$0\") == systemctl && ${MOCK_SYSTEMCTL_FAIL_RELOAD:-} == 1 && $* == *'reload openvpn-server@course'* ]]; then\n"
             "  exit 42\n"
             "fi\n"
+            "if [[ $(basename \"$0\") == systemctl && ${MOCK_SYSTEMCTL_RELOAD_UNSUPPORTED:-} == 1 && $* == *'reload openvpn-server@course'* ]]; then\n"
+            "  printf 'Failed to reload openvpn-server@course.service: Job type reload is not applicable for unit openvpn-server@course.service.\\n' >&2\n"
+            "  exit 42\n"
+            "fi\n"
+            "if [[ $(basename \"$0\") == systemctl && ${MOCK_SYSTEMCTL_UNRELATED_UNSUPPORTED:-} == 1 && $* == *'reload openvpn-server@course'* ]]; then\n"
+            "  printf 'Authentication method is not supported.\\n' >&2\n"
+            "  exit 44\n"
+            "fi\n"
+            "if [[ $(basename \"$0\") == systemctl && ${MOCK_SYSTEMCTL_FAIL_RESTART:-} == 1 && $* == *'restart openvpn-server@course'* ]]; then\n"
+            "  printf 'Failed to restart openvpn-server@course.service.\\n' >&2\n"
+            "  exit 43\n"
+            "fi\n"
             "if [[ $(basename \"$0\") == openssl && ${MOCK_OPENSSL_FAIL_VERIFY:-} == 1 && ${1:-} == verify ]]; then\n"
             "  exit 44\n"
             "fi\n"
@@ -438,6 +450,68 @@ def test_rotate_rolls_back_after_post_revoke_failure(
     assert "revoked course-shared" not in (pki / "pki/index.txt").read_text()
     calls = mock_commands.read_text().splitlines()
     assert sum("reload openvpn-server@course" in line for line in calls) == 2
+
+
+def test_rotate_restarts_when_systemd_reload_is_unsupported(
+    course_env, mock_commands
+) -> None:
+    result = run_course(
+        {**course_env, "MOCK_SYSTEMCTL_RELOAD_UNSUPPORTED": "1"},
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = mock_commands.read_text().splitlines()
+    assert sum("reload openvpn-server@course" in line for line in calls) == 1
+    assert sum("restart openvpn-server@course" in line for line in calls) == 1
+    assert configured_path(course_env, "ACTIVE_CLIENT_CN_FILE").read_text() == (
+        "course-shared-20300101000000\n"
+    )
+
+
+def test_rotate_rollback_restarts_when_systemd_reload_is_unsupported(
+    course_env, mock_commands
+) -> None:
+    before = rotation_state(course_env)
+    result = run_course(
+        {
+            **course_env,
+            "MOCK_SYSTEMCTL_RELOAD_UNSUPPORTED": "1",
+            "MOCK_SYSTEMCTL_FAIL_RESTART": "1",
+        },
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode != 0
+    assert rotation_state(course_env) == before
+    calls = mock_commands.read_text().splitlines()
+    assert sum("reload openvpn-server@course" in line for line in calls) == 2
+    assert sum("restart openvpn-server@course" in line for line in calls) == 2
+
+
+def test_rotate_rolls_back_for_unrelated_not_supported_reload_error(
+    course_env, mock_commands
+) -> None:
+    before = rotation_state(course_env)
+    result = run_course(
+        {**course_env, "MOCK_SYSTEMCTL_UNRELATED_UNSUPPORTED": "1"},
+        "rotate",
+        "--days",
+        "30",
+        input_text="ROTATE course-shared\n",
+    )
+
+    assert result.returncode != 0
+    assert rotation_state(course_env) == before
+    calls = mock_commands.read_text().splitlines()
+    assert sum("reload openvpn-server@course" in line for line in calls) == 2
+    assert sum("restart openvpn-server@course" in line for line in calls) == 0
 
 
 def test_rotate_rolls_back_build_artifacts_when_verify_fails(
