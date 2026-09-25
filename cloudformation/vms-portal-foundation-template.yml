@@ -110,11 +110,11 @@ Resources:
             - Name: line_item_currency_code
               Type: string
             - Name: line_item_unblended_cost
-              Type: decimal(38,18)
+              Type: double
             - Name: reservation_effective_cost
-              Type: decimal(38,18)
+              Type: double
             - Name: savings_plan_savings_plan_effective_cost
-              Type: decimal(38,18)
+              Type: double
 
   CostWorkGroup:
     Type: AWS::Athena::WorkGroup

@@ -243,6 +243,13 @@ def test_foundation_defines_cur2_parquet_glue_projection_and_athena_limits() -> 
     assert table["Parameters"]["projection.enabled"] == "true"
     assert table["Parameters"]["projection.billing_period.type"] == "date"
     assert "${!billing_period}" in table["Parameters"]["storage.location.template"]
+    columns = {
+        column["Name"]: column["Type"]
+        for column in table["StorageDescriptor"]["Columns"]
+    }
+    assert columns["line_item_unblended_cost"] == "double"
+    assert columns["reservation_effective_cost"] == "double"
+    assert columns["savings_plan_savings_plan_effective_cost"] == "double"
     assert (
         resources["CostWorkGroup"]["Properties"]["WorkGroupConfiguration"][
             "BytesScannedCutoffPerQuery"
