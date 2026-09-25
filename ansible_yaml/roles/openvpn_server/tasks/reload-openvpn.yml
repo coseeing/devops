@@ -1,24 +1,21 @@
 ---
-- name: Reload course OpenVPN
-  block:
-    - name: Reload course OpenVPN via systemd
-      ansible.builtin.systemd_service:
-        name: openvpn-server@course
-        state: reloaded
-  rescue:
-    - name: Detect unsupported OpenVPN reload
-      ansible.builtin.set_fact:
-        openvpn_reload_unsupported: >-
-          {{ 'Job type reload is not applicable' in (ansible_failed_result.msg | default(''))
-          or 'not supported' in (ansible_failed_result.msg | default('')) }}
+# An included handler's rescue does not handle failures during flush_handlers.
+# Accept only the known unsupported-reload errors here so the next handler task
+# can restart; all other errors still enter the activation block's rollback.
+- name: Reload course OpenVPN via systemd
+  ansible.builtin.systemd_service:
+    name: openvpn-server@course
+    state: reloaded
+  register: openvpn_reload_result
+  failed_when:
+    - openvpn_reload_result is failed
+    - "'Job type reload is not applicable' not in (openvpn_reload_result.msg | default(''))"
+    - "'not supported' not in (openvpn_reload_result.msg | default(''))"
 
-    - name: Restart course OpenVPN when reload is unsupported
-      ansible.builtin.systemd_service:
-        name: openvpn-server@course
-        state: restarted
-      when: openvpn_reload_unsupported | bool
-
-    - name: Fail course OpenVPN reload
-      ansible.builtin.fail:
-        msg: "{{ ansible_failed_result.msg | default('OpenVPN reload failed') }}"
-      when: not openvpn_reload_unsupported | bool
+- name: Restart course OpenVPN when reload is unsupported
+  ansible.builtin.systemd_service:
+    name: openvpn-server@course
+    state: restarted
+  when: >-
+    'Job type reload is not applicable' in (openvpn_reload_result.msg | default(''))
+    or 'not supported' in (openvpn_reload_result.msg | default(''))
