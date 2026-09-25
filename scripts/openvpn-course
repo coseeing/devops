@@ -40,6 +40,30 @@ acquire_mutation_lock() {
   flock -n 9 || die "another rotate or share operation is already in progress"
 }
 
+reload_or_restart_openvpn() {
+  local output status
+
+  if output=$(systemctl reload openvpn-server@course 2>&1); then
+    return 0
+  else
+    status=$?
+  fi
+
+  case "$output" in
+    *"Job type reload is not applicable"*|*"reload not supported"*|*"does not support reload"*)
+      if systemctl restart openvpn-server@course; then
+        return 0
+      else
+        return $?
+      fi
+      ;;
+    *)
+      printf '%s\n' "$output" >&2
+      return "$status"
+      ;;
+  esac
+}
+
 status_command() {
   local clients=0 service_state listener expiry active_cn
   active_cn=$(<"$ACTIVE_CLIENT_CN_FILE")
@@ -244,7 +268,7 @@ rollback_rotation() {
   printf 'error: rotation failed; restoring previous profile state\n' >&2
   restore_rotation_state || restore_failed=1
   if (( ROTATION_RELOAD_ON_ROLLBACK )); then
-    systemctl reload openvpn-server@course || true
+    reload_or_restart_openvpn || true
   fi
   if (( restore_failed )); then
     printf 'warning: rollback encountered one or more restore failures\n' >&2
@@ -496,7 +520,7 @@ rotate_command() {
   publish_file_atomically "$ROTATION_WORK/current.ovpn" "$PROFILE_PATH" 0600
   publish_text_atomically "$new_cn" "$ACTIVE_CLIENT_CN_FILE" 0600
   publish_file_atomically "$PKI_DIR/pki/crl.pem" "$SERVER_CRL_PATH" 0644
-  systemctl reload openvpn-server@course
+  reload_or_restart_openvpn
   trap - ERR
   trap - EXIT
   cleanup_rotation
