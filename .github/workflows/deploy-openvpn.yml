@@ -23,7 +23,7 @@ on:
         required: true
         default: 10.250.0.0/24
       client_days:
-        description: Shared client certificate validity in days
+        description: Initial client certificate validity; ignored after it exists
         required: true
         default: "30"
       confirm_endpoint:
@@ -70,6 +70,10 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     environment: a11y-village-production
+    concurrency:
+      group: openvpn-course-production
+      cancel-in-progress: false
+      queue: max
     permissions:
       id-token: write
       contents: read
@@ -164,20 +168,28 @@ jobs:
           [[ "$PROFILE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
 
           echo "profile_bucket=$PROFILE_BUCKET" >> "$GITHUB_OUTPUT"
-      - name: Install EC2 SSH key
+      - name: Install EC2 SSH credentials
         env:
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_KNOWN_HOSTS: ${{ secrets.OPENVPN_SSH_KNOWN_HOSTS }}
+          HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/openvpn-known-hosts
           SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
         run: |
           set -euo pipefail
 
           umask 077
           printf '%s\n' "$EC2_SSH_KEY" > "$SSH_KEY_PATH"
+          printf '%s\n' "$EC2_SSH_KNOWN_HOSTS" > "$SSH_KNOWN_HOSTS_PATH"
+          ssh-keygen -F "$HOST_IP" -f "$SSH_KNOWN_HOSTS_PATH" >/dev/null
       - name: Install Ansible Core
         run: python3 -m pip install ansible-core==2.21.3
       - name: Deploy OpenVPN with Ansible
         env:
-          ANSIBLE_HOST_KEY_CHECKING: "False"
+          ANSIBLE_HOST_KEY_CHECKING: "True"
+          ANSIBLE_SSH_ARGS: >-
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile=${{ runner.temp }}/openvpn-known-hosts
           CLIENT_DAYS: ${{ steps.discover.outputs.client_days }}
           ENDPOINT: ${{ steps.discover.outputs.endpoint }}
           HOST_IP: ${{ steps.discover.outputs.host_ip }}
@@ -207,13 +219,14 @@ jobs:
       - name: Verify remote OpenVPN service state
         env:
           HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/openvpn-known-hosts
           SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
         run: |
           set -euo pipefail
 
           ssh -i "$SSH_KEY_PATH" \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
             "ubuntu@$HOST_IP" \
             'sudo bash -se' <<'REMOTE_CHECKS'
           systemctl is-active --quiet openvpn-course-firewall openvpn-server@course
@@ -250,13 +263,17 @@ jobs:
             echo "- Deployment: \`passed\`"
             echo "- Remote checks: \`passed\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Remove EC2 SSH key
+      - name: Remove EC2 SSH credentials
         if: always()
         env:
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/openvpn-known-hosts
           SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
         run: |
           set -euo pipefail
 
           if [ -f "$SSH_KEY_PATH" ]; then
             shred -u "$SSH_KEY_PATH" || rm -f "$SSH_KEY_PATH"
+          fi
+          if [ -f "$SSH_KNOWN_HOSTS_PATH" ]; then
+            shred -u "$SSH_KNOWN_HOSTS_PATH" || rm -f "$SSH_KNOWN_HOSTS_PATH"
           fi

@@ -6,8 +6,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_workflow():
+    return yaml.safe_load((ROOT / ".github/workflows/deploy-openvpn.yml").read_text())
+
+
+def load_profile_workflow():
     return yaml.safe_load(
-        (ROOT / ".github/workflows/deploy-openvpn.yml").read_text()
+        (ROOT / ".github/workflows/manage-openvpn-profile.yml").read_text()
     )
 
 
@@ -21,9 +25,7 @@ def test_workflow_has_validate_and_exactly_confirmed_deploy_jobs() -> None:
 
 
 def test_workflow_discovers_networks_without_modifying_security_groups() -> None:
-    workflow_text = (
-        ROOT / ".github/workflows/deploy-openvpn.yml"
-    ).read_text()
+    workflow_text = (ROOT / ".github/workflows/deploy-openvpn.yml").read_text()
     assert "aws ec2 describe-subnets" in workflow_text
     assert "aws ec2 describe-vpcs" in workflow_text
     assert "validate-openvpn-inputs.py" in workflow_text
@@ -42,12 +44,18 @@ def test_workflow_validates_before_deploy_and_hides_s3_sentinel_url() -> None:
     deploy_steps = {
         step.get("name"): step for step in workflow["jobs"]["deploy"]["steps"]
     }
-    assert "--no-fail-on-empty-changeset" in deploy_steps[
-        "Deploy profile distribution"
-    ]["run"]
-    assert deploy_steps["Deploy OpenVPN with Ansible"]["env"][
-        "ANSIBLE_HOST_KEY_CHECKING"
-    ] == "False"
+    assert (
+        "--no-fail-on-empty-changeset"
+        in deploy_steps["Deploy profile distribution"]["run"]
+    )
+    assert (
+        deploy_steps["Deploy OpenVPN with Ansible"]["env"]["ANSIBLE_HOST_KEY_CHECKING"]
+        == "True"
+    )
+    assert (
+        "UserKnownHostsFile"
+        in deploy_steps["Deploy OpenVPN with Ansible"]["env"]["ANSIBLE_SSH_ARGS"]
+    )
     deploy_run = deploy_steps["Deploy OpenVPN with Ansible"]["run"]
     assert "ansible-playbook" in deploy_run
     assert "current.ovpn" not in deploy_run
@@ -97,9 +105,92 @@ def test_workflow_remote_check_verifies_active_docker_course_firewall_path() -> 
     assert "openvpn-course-forward" in remote_run
     assert "OPENVPN-COURSE-A" in remote_run
     assert "OPENVPN-COURSE-B" in remote_run
-    assert "-S \"$active_course_chain\"" in remote_run
+    assert '-S "$active_course_chain"' in remote_run
     assert "nft list table inet openvpn_course_input" in remote_run
     assert "nft list table ip openvpn_course_nat" in remote_run
+
+
+def test_deploy_preserves_current_profile_without_publishing_a_share() -> None:
+    workflow = load_workflow()
+    deploy = workflow["jobs"]["deploy"]
+
+    assert deploy["concurrency"] == {
+        "group": "openvpn-course-production",
+        "cancel-in-progress": False,
+        "queue": "max",
+    }
+    deploy_text = yaml.safe_dump(deploy)
+    assert "openvpn-course share" not in deploy_text
+    assert "openvpn-course rotate" not in deploy_text
+    assert "PROFILE_SECRET_ID" not in deploy_text
+    assert "secretsmanager" not in deploy_text
+
+
+def test_profile_workflow_rotates_or_shares_only_when_explicitly_requested() -> None:
+    workflow = load_profile_workflow()
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]
+    manage = workflow["jobs"]["manage"]
+    steps = {step.get("name"): step for step in manage["steps"]}
+
+    assert dispatch["action"]["options"] == ["share", "rotate"]
+    assert dispatch["client_days"]["default"] == "30"
+    assert dispatch["confirm_rotation"]["required"] is False
+    assert manage["environment"] == "a11y-village-production"
+    assert manage["concurrency"] == {
+        "group": "openvpn-course-production",
+        "cancel-in-progress": False,
+        "queue": "max",
+    }
+    assert manage["env"]["PROFILE_SECRET_ID"] == ("prod/vms-portal/openvpn-profile")
+
+    validate_run = steps["Validate requested profile operation"]["run"]
+    assert "ROTATE course-shared" in validate_run
+    assert "CLIENT_DAYS" in validate_run
+
+    rotate = steps["Rotate shared OpenVPN certificate"]
+    assert rotate["if"] == "inputs.action == 'rotate'"
+    assert "sudo openvpn-course rotate --days" in rotate["run"]
+    assert "ROTATE course-shared" in rotate["run"]
+
+    publish = steps["Publish current OpenVPN profile download secret"]
+    assert publish["env"] == {
+        "HOST_IP": "${{ steps.discover.outputs.host_ip }}",
+        "SSH_KNOWN_HOSTS_PATH": "${{ runner.temp }}/openvpn-known-hosts",
+        "SSH_KEY_PATH": "${{ runner.temp }}/openvpn-ec2-key",
+    }
+    publish_run = publish["run"]
+    assert "sudo openvpn-course share" in publish_run
+    assert 'echo "::add-mask::${PROFILE_URL}"' in publish_run
+    assert "jq -n" in publish_run
+    assert "'{url:$url,expires_at:$expires_at}'" in publish_run
+    assert "aws secretsmanager describe-secret" in publish_run
+    assert "aws secretsmanager put-secret-value" in publish_run
+    assert "aws secretsmanager create-secret" in publish_run
+    assert "ResourceNotFoundException" in publish_run
+    assert 'cat "$DESCRIBE_ERROR" >&2' in publish_run
+    assert "$GITHUB_OUTPUT" not in publish_run
+    assert "$GITHUB_STEP_SUMMARY" not in publish_run
+
+
+def test_workflows_pin_the_openvpn_ssh_host_key() -> None:
+    deploy = load_workflow()["jobs"]["deploy"]
+    manage = load_profile_workflow()["jobs"]["manage"]
+
+    for job in (deploy, manage):
+        steps = {step.get("name"): step for step in job["steps"]}
+        install = steps["Install EC2 SSH credentials"]
+        assert install["env"]["EC2_SSH_KNOWN_HOSTS"] == (
+            "${{ secrets.OPENVPN_SSH_KNOWN_HOSTS }}"
+        )
+        assert install["env"]["SSH_KNOWN_HOSTS_PATH"] == (
+            "${{ runner.temp }}/openvpn-known-hosts"
+        )
+
+        job_text = yaml.safe_dump(job)
+        assert "StrictHostKeyChecking=yes" in job_text
+        assert "UserKnownHostsFile" in job_text
+        assert "StrictHostKeyChecking=no" not in job_text
+        assert "UserKnownHostsFile=/dev/null" not in job_text
 
 
 def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
@@ -117,6 +208,16 @@ def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
     ):
         assert required in text
     assert "does not modify Security Groups" in text
+
+
+def test_operations_docs_cover_pinned_host_key_and_ambiguous_rotation() -> None:
+    english = (ROOT / "docs/openvpn-course-operations.md").read_text()
+    chinese = (ROOT / "docs/openvpn-course-operations.zh-TW.md").read_text()
+
+    for text in (english, chinese):
+        assert "OPENVPN_SSH_KNOWN_HOSTS" in text
+        assert "/var/lib/openvpn-course/active-client-cn" in text
+        assert "sudo openvpn-course status" in text
 
 
 def doc_section(text: str, heading: str) -> str:
