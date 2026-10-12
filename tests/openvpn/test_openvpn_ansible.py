@@ -25,12 +25,18 @@ def named_task(tasks: list[dict[str, object]], name: str) -> dict[str, object]:
     raise AssertionError(f"missing task: {name}")
 
 
-def test_playbook_uses_only_openvpn_role() -> None:
+def test_playbook_uses_only_openvpn_and_nvda_remote_roles() -> None:
     playbook = yaml.safe_load(
         (ROOT / "ansible_yaml/openvpn-server-playbook.yml").read_text()
     )
     assert playbook[0]["become"] is True
-    assert playbook[0]["roles"] == ["openvpn_server"]
+    assert playbook[0]["roles"] == [
+        "openvpn_server",
+        {
+            "role": "nvda_remote_server",
+            "nvda_remote_port": "{{ openvpn_nvda_remote_port }}",
+        },
+    ]
     rendered = str(playbook)
     assert "common/pre-common.yml" not in rendered
     assert "common/post-common.yml" not in rendered
@@ -316,6 +322,25 @@ def test_firewall_allows_only_rdp_to_windows_and_drops_other_vpn_traffic() -> No
     assert "flush ruleset" not in rules
     assert "0.0.0.0/0" not in rules
     assert "openvpn_vpc_cidr" not in rules
+
+
+def test_firewall_input_allows_nvda_remote_only_from_vpn_and_windows() -> None:
+    rules = (ROLE / "templates/course-firewall.nft.j2").read_text()
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    assert defaults["openvpn_nvda_remote_port"] == 6837
+
+    port = "{{ openvpn_nvda_remote_port }}"
+    vpn_allow = rules.index(
+        f'iifname "tun-course" ip saddr {{{{ openvpn_vpn_cidr }}}} tcp dport {port} accept'
+    )
+    vpn_drop = rules.index('iifname "tun-course" drop')
+    loopback_allow = rules.index(f'iifname "lo" tcp dport {port} accept')
+    windows_allow = rules.index(
+        f"ip saddr {{{{ openvpn_windows_cidr }}}} tcp dport {port} accept"
+    )
+    other_drop = rules.index(f"tcp dport {port} drop")
+
+    assert vpn_allow < vpn_drop < loopback_allow < windows_allow < other_drop
 
 
 def test_firewall_drops_new_return_path_traffic_before_vpn_ingress_rules() -> None:

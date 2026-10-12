@@ -5,3 +5,5 @@
   gather_facts: true
   roles:
     - openvpn_server
+    - role: nvda_remote_server
+      nvda_remote_port: "{{ openvpn_nvda_remote_port }}"

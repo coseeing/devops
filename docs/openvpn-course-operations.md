@@ -27,9 +27,12 @@ that `FORWARD`-to-`DOCKER-USER` path is unavailable, the firewall preflight
 fails closed before the role enables IPv4 forwarding or starts OpenVPN.
 
 The course also owns `inet openvpn_course_input`, whose input base chain has a
-terminal drop for all `iifname "tun-course"` traffic. It prevents VPN clients
-from reaching Linux host services through the tunnel while safely coexisting
-with other host input policy: its drop verdict is terminal. The helper
+terminal drop for all `iifname "tun-course"` traffic except the NVDA Remote
+relay (TCP 6837). It prevents VPN clients from reaching any other Linux host
+service through the tunnel while safely coexisting with other host input
+policy: its drop verdict is terminal. The same chain accepts TCP 6837 only from
+the VPN client network, the Windows subnet, and loopback, and drops it from
+every other source, including the public interface. The helper
 atomically replaces only that table and `ip openvpn_course_nat` (and removes
 the legacy `inet openvpn_course` table if it is still present).
 
@@ -46,6 +49,9 @@ tries to connect:
 - Linux EC2 inbound: UDP 1194 from the intended client networks.
 - Windows inbound: TCP 3389 from the Linux host private IPv4 address as a
   `/32` source rule.
+- Linux EC2 inbound: TCP 6837 (NVDA Remote) from the Windows Security Group or
+  the Windows subnet CIDR. Never open TCP 6837 to `0.0.0.0/0`. VPN clients reach
+  the relay inside the tunnel and need no extra Security Group rule.
 - When VPN-only RDP is required, remove public RDP (TCP 3389) inbound rules
   from the Windows Security Group separately. The workflow never performs this
   removal and cannot prevent direct RDP to a Windows public address while such a
@@ -229,6 +235,36 @@ the PC name to the Windows **Private IPv4** from VMS Portal. Use the Windows
 credentials supplied by the course administrator and connect only after the
 OpenVPN client is connected. Do not save the `.ovpn` profile or Windows
 password in an unprotected shared location.
+
+## Connect with NVDA Remote
+
+The same playbook runs the NVDA Remote relay server
+([jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer), a
+digest-pinned Docker image) on the Linux host as the systemd unit
+`nvda-remote-server`, on TCP 6837 with host networking. It uses its own
+self-signed certificate generated once under `/var/lib/nvda-remote-server`,
+not the private key bundled in the public image, and logs connection events
+without channel keys.
+
+| Client | NVDA Remote host | Port |
+| --- | --- | --- |
+| Mac (OpenVPN connected) | First address of `vpn_cidr`, e.g. `10.250.0.1` | 6837 |
+| Windows VM | Linux host **Private IPv4**, e.g. `10.0.1.10` | 6837 |
+
+Both sides choose **Connect to a control server**, enter the same host-specific
+address shown above and port 6837, and type the same key; one side controls,
+the other is controlled. On the first connection NVDA warns that the
+certificate is not trusted: compare its fingerprint with
+`sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -fingerprint -sha256`
+and then choose to trust it.
+
+Operator checks on the Linux host:
+
+```bash
+systemctl status nvda-remote-server
+sudo journalctl -u nvda-remote-server -n 100
+sudo nft list chain inet openvpn_course_input input
+```
 
 ## Verify Split Tunnel and Blocked Traffic
 

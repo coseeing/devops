@@ -60,7 +60,7 @@ flowchart LR
     Mac -.->|取得目標私有 IP| Portal
 ```
 
-VPN 只推送 Windows subnet 路由；其他網際網路流量不經這台 VPN。防火牆阻擋經 tunnel 存取 Linux 本機服務、其他 VPN client，以及 Windows 的非 3389 轉送流量。Windows 看到的來源是 Linux 私有 IP，因此 Windows SG 應允許該 IP 的 `/32`，不是 `vpn_cidr`。回程藉由 NAT 狀態返回，不需為這個 VPN 位址池新增 VPC route table 路由。
+VPN 只推送 Windows subnet 路由；其他網際網路流量不經這台 VPN。防火牆阻擋經 tunnel 存取 Linux 本機服務（唯一例外是 NVDA Remote 的 TCP 6837）、其他 VPN client，以及 Windows 的非 3389 轉送流量。TCP 6837 只接受 VPN client 網段、Windows subnet 與 loopback，其他來源（包含公開網路）一律丟棄。Windows 看到的來源是 Linux 私有 IP，因此 Windows SG 應允許該 IP 的 `/32`，不是 `vpn_cidr`。回程藉由 NAT 狀態返回，不需為這個 VPN 位址池新增 VPC route table 路由。
 
 VMS Portal 提供主機查詢，不是 VPN 登入服務，也不在 RDP 資料路徑上。現有 Docker/Traefik 可與原生 OpenVPN 共存；部署依賴主機既有 `iptables-nft` 與 `FORWARD → DOCKER-USER` 路徑。
 
@@ -84,6 +84,7 @@ VMS Portal 提供主機查詢，不是 VPN 登入服務，也不在 RDP 資料�
 1. Linux SG：允許預定使用者來源的 **UDP 1194**。SSH 部署另需讓 GitHub runner 能連到 Linux 公開 IP 的 **TCP 22**。
 2. Windows SG：允許 **TCP 3389**，來源填 Linux 的 **私有 IPv4 `/32`**，例如 `10.0.1.10/32`。
 3. 若要求只能經 VPN 使用 RDP，另行移除 Windows SG 對公開網路開放的 3389 規則。workflow 不會代做。
+   - Linux SG：允許 **TCP 6837**（NVDA Remote），來源填 Windows SG 或 Windows subnet CIDR。**不要**對 `0.0.0.0/0` 開放。Mac 經 VPN tunnel 連線，不需另加 SG 規則。
 4. 確認 route table、Network ACL、Linux 與 Windows 防火牆允許必要流量；Linux 也需能下載套件並以 HTTPS 存取 S3。
 5. DNS 指向正確公開 IP。若使用會代理 HTTP 的 DNS 服務，VPN 名稱須走可直接到達主機的 DNS 解析；此服務是 UDP 1194。
 
@@ -309,6 +310,27 @@ chmod 600 "$HOME/.course-vpn/course-vpn.ovpn"
 4. 新增 PC，在 PC name 填 Windows 私有 IP，例如 `10.0.8.25`，輸入管理員交付的 Windows 帳號密碼後連線。這裡的密碼不是 Mac 密碼、Portal 密碼或 VPN 憑證。
 
 Windows App 的 PC 連線操作可對照 [Microsoft 官方說明](https://learn.microsoft.com/en-us/windows-app/get-started-connect-devices-desktops-apps)。
+
+### 7.4 NVDA Remote 遠端協助
+
+同一個 playbook 會在 Linux 主機上以 Docker（固定 digest 的 [jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer) image、host network）執行 NVDA Remote relay server，systemd 服務名稱為 `nvda-remote-server`，port **6837**。它使用部署時在 `/var/lib/nvda-remote-server` 產生一次的自簽憑證，而不是公開 image 內附的私鑰；log 只記錄連線事件，不記錄 channel key。
+
+| 用戶端 | NVDA Remote 主機位址 | Port |
+| --- | --- | --- |
+| Mac（OpenVPN 已連線） | `vpn_cidr` 的第一個位址，例如 `10.250.0.1` | 6837 |
+| Windows VM | Linux 主機的 **私有 IPv4**，例如 `10.0.1.10` | 6837 |
+
+兩端都選 **連線到控制伺服器（Connect to a control server）**，主機填上表對應的位址、port 6837，輸入相同的 key；一端控制、另一端被控制。第一次連線時 NVDA 會提示憑證不受信任，請管理員以
+`sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -fingerprint -sha256`
+核對指紋後再選擇信任。
+
+Linux 主機上的檢查指令：
+
+```bash
+systemctl status nvda-remote-server
+sudo journalctl -u nvda-remote-server -n 100
+sudo nft list chain inet openvpn_course_input input
+```
 
 ## 8. 憑證更新與日常維運
 

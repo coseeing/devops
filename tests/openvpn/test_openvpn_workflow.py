@@ -102,6 +102,20 @@ def test_workflow_remote_check_verifies_active_docker_course_firewall_path() -> 
     assert "nft list table ip openvpn_course_nat" in remote_run
 
 
+def test_workflow_remote_check_verifies_nvda_remote_server() -> None:
+    workflow = load_workflow()
+    remote_run = next(
+        step["run"]
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Verify remote OpenVPN service state"
+    )
+
+    assert "systemctl is-active --quiet nvda-remote-server" in remote_run
+    assert "systemctl is-enabled --quiet nvda-remote-server" in remote_run
+    assert 'ss -ltn | grep -Eq "[:.]6837[[:space:]]"' in remote_run
+    assert "tcp dport 6837 drop" in remote_run
+
+
 def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
     text = (ROOT / "docs/openvpn-course-operations.md").read_text()
     for required in (

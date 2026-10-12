@@ -235,6 +235,10 @@ jobs:
           iptables -w 5 -t filter -S "$active_course_chain" >/dev/null
           nft list table inet openvpn_course_input >/dev/null
           nft list table ip openvpn_course_nat >/dev/null
+          nft list chain inet openvpn_course_input input | grep -Fq 'tcp dport 6837 drop'
+          systemctl is-active --quiet nvda-remote-server
+          systemctl is-enabled --quiet nvda-remote-server
+          ss -ltn | grep -Eq "[:.]6837[[:space:]]"
           REMOTE_CHECKS
       - name: Deployment summary
         env:
@@ -249,6 +253,7 @@ jobs:
             echo "- Profile bucket: \`$PROFILE_BUCKET\`"
             echo "- Deployment: \`passed\`"
             echo "- Remote checks: \`passed\`"
+            echo "- NVDA Remote server: \`TCP 6837\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove EC2 SSH key
         if: always()

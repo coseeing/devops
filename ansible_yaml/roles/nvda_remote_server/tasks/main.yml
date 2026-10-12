@@ -1,0 +1,96 @@
+---
+- name: Validate NVDA Remote server inputs
+  ansible.builtin.assert:
+    that:
+      - nvda_remote_port | int >= 1024
+      - nvda_remote_port | int <= 65535
+      - nvda_remote_image is search('@sha256:[a-f0-9]{64}$')
+      - nvda_remote_loglevel | int in [0, 1, 2]
+    fail_msg: >-
+      NVDA Remote needs an unprivileged port, a digest-pinned image, and a
+      log level that never records channel keys (0-2).
+
+- name: Require the existing Docker engine
+  ansible.builtin.command:
+    argv: [docker, version, --format, "{{ '{{' }}.Server.Version{{ '}}' }}"]
+  changed_when: false
+
+- name: Create NVDA Remote data directory
+  ansible.builtin.file:
+    path: "{{ nvda_remote_data_dir }}"
+    state: directory
+    owner: root
+    group: "{{ nvda_remote_gid }}"
+    mode: "0750"
+
+- name: Generate NVDA Remote TLS certificate once
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -newkey
+      - rsa:3072
+      - -nodes
+      - -days
+      - "{{ nvda_remote_cert_days | string }}"
+      - -subj
+      - "/CN={{ nvda_remote_cert_cn }}"
+      - -keyout
+      - "{{ nvda_remote_data_dir }}/server.key"
+      - -out
+      - "{{ nvda_remote_data_dir }}/server.crt"
+    creates: "{{ nvda_remote_data_dir }}/server.crt"
+  notify: Restart NVDA Remote server
+
+- name: Lock NVDA Remote TLS material permissions
+  ansible.builtin.file:
+    path: "{{ nvda_remote_data_dir }}/{{ item.name }}"
+    owner: root
+    group: "{{ nvda_remote_gid }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - name: server.key
+      mode: "0640"
+    - name: server.crt
+      mode: "0644"
+
+- name: Render NVDA Remote server configuration
+  ansible.builtin.template:
+    src: NVDARemoteServer.conf.j2
+    dest: "{{ nvda_remote_data_dir }}/NVDARemoteServer.conf"
+    owner: root
+    group: "{{ nvda_remote_gid }}"
+    mode: "0640"
+  notify: Restart NVDA Remote server
+
+- name: Pull pinned NVDA Remote server image
+  ansible.builtin.command:
+    argv: [docker, pull, --quiet, "{{ nvda_remote_image }}"]
+  register: nvda_remote_pull
+  changed_when: false
+
+- name: Install NVDA Remote server unit
+  ansible.builtin.template:
+    src: nvda-remote-server.service.j2
+    dest: "/etc/systemd/system/{{ nvda_remote_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart NVDA Remote server
+
+- name: Enable and start NVDA Remote server
+  ansible.builtin.systemd_service:
+    name: "{{ nvda_remote_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Flush NVDA Remote server handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for NVDA Remote server to listen
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ nvda_remote_port | int }}"
+    timeout: 30
