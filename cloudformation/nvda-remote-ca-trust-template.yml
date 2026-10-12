@@ -8,6 +8,10 @@ Parameters:
     AllowedPattern: "^[A-Za-z0-9+/]+={0,2}$"
     MinLength: 100
     MaxLength: 4096
+  CaExpiresAt:
+    Type: String
+    Description: CA certificate expiry date (UTC, YYYY-MM-DD), shown to VMS Portal admins
+    AllowedPattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
   VpnHost:
     Type: String
     Description: NVDA Remote address for OpenVPN clients (first host of the VPN CIDR)
@@ -30,7 +34,7 @@ Resources:
     Properties:
       Name: prod/vms-portal/nvda-remote
       Description: NVDA Remote CA certificate and relay addresses for VMS Portal
-      SecretString: !Sub '{"ca_der_base64":"${CaCertificateDerBase64}","vpn_host":"${VpnHost}","vm_host":"${VmHost}","port":${Port}}'
+      SecretString: !Sub '{"ca_der_base64":"${CaCertificateDerBase64}","ca_expires_at":"${CaExpiresAt}","vpn_host":"${VpnHost}","vm_host":"${VmHost}","port":${Port}}'
 
   TrustNvdaRemoteCa:
     Type: AWS::SSM::Association

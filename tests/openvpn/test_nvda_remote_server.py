@@ -206,8 +206,8 @@ def test_connection_details_secret_matches_portal_schema() -> None:
     assert "Type: AWS::SecretsManager::Secret" in text
     assert "Name: prod/vms-portal/nvda-remote" in text
     assert (
-        '{"ca_der_base64":"${CaCertificateDerBase64}","vpn_host":"${VpnHost}",'
-        '"vm_host":"${VmHost}","port":${Port}}'
+        '{"ca_der_base64":"${CaCertificateDerBase64}","ca_expires_at":"${CaExpiresAt}",'
+        '"vpn_host":"${VpnHost}","vm_host":"${VmHost}","port":${Port}}'
     ) in text
 
 
@@ -217,6 +217,8 @@ def test_workflow_publishes_both_relay_addresses() -> None:
     assert "next(ipaddress.ip_network(sys.argv[1]).hosts())" in workflow
     assert 'VpnHost="$VPN_SERVER_IP"' in workflow
     assert 'VmHost="$PRIVATE_IP"' in workflow
+    assert 'CaExpiresAt="$CA_EXPIRES_AT"' in workflow
+    assert "openssl x509 -noout -enddate" in workflow
 
 
 def make_expiring_ca(env: dict[str, str], ca_dir: Path, days: int) -> bytes:

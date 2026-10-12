@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from datetime import date
 
 import pytest
 from vms_portal.nvda_remote import (
@@ -18,6 +19,7 @@ CA_DER = b"\x30\x82" + bytes(range(256)) * 2
 def secret(**overrides) -> str:
     data = {
         "ca_der_base64": base64.b64encode(CA_DER).decode(),
+        "ca_expires_at": "2036-10-12",
         "vpn_host": "10.250.0.1",
         "vm_host": "10.0.1.10",
         "port": 6837,
@@ -45,6 +47,7 @@ def test_parse_info_reads_hosts_port_and_fingerprint() -> None:
     assert str(info.vm_host) == "10.0.1.10"
     assert info.port == 6837
     assert info.ca_der == CA_DER
+    assert info.ca_expires_on == date(2036, 10, 12)
     expected = hashlib.sha256(CA_DER).hexdigest().upper()
     assert info.ca_sha256.replace(":", "") == expected
     assert info.ca_sha256.count(":") == 31
@@ -61,6 +64,8 @@ def test_parse_info_reads_hosts_port_and_fingerprint() -> None:
         {"ca_der_base64": "not base64!" * 20},
         {"ca_der_base64": base64.b64encode(b"\x31" * 200).decode()},
         {"ca_der_base64": "MA=="},
+        {"ca_expires_at": "2036-13-01"},
+        {"ca_expires_at": 20361012},
     ],
 )
 def test_parse_info_rejects_invalid_secrets(overrides) -> None:
@@ -117,3 +122,24 @@ def test_source_caches_and_keeps_last_good_value_on_failure() -> None:
 def test_source_returns_none_when_secret_was_never_readable() -> None:
     source = NvdaRemoteSource(FakeClient([RuntimeError("missing")]), "prod/vms-portal/nvda-remote")
     assert source.get() is None
+
+
+@pytest.mark.parametrize(
+    ("today", "status"),
+    [
+        # 2036 is a leap year: 2035-10-12 is 366 days out, 2035-10-13 is 365.
+        (date(2035, 10, 12), "ok"),
+        (date(2035, 10, 13), "rotation_due"),
+        (date(2036, 10, 11), "rotation_due"),
+        (date(2036, 10, 12), "expired"),
+    ],
+)
+def test_ca_status_matches_the_deploy_rotation_window(today, status) -> None:
+    assert parse_info(secret()).ca_status(today) == status
+
+
+def test_parse_info_requires_the_expiry_date() -> None:
+    data = json.loads(secret())
+    del data["ca_expires_at"]
+    with pytest.raises(NvdaRemoteFormatError):
+        parse_info(json.dumps(data))

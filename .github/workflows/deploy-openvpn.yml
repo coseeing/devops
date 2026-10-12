@@ -285,9 +285,11 @@ jobs:
           CA_SUBJECT=$(openssl x509 -noout -subject -nameopt RFC2253 <<<"$CA_PEM")
           [[ "$CA_SUBJECT" == "subject=CN=Coseeing NVDA Remote CA" ]]
           CA_FINGERPRINT=$(openssl x509 -noout -fingerprint -sha256 <<<"$CA_PEM" | cut -d= -f2)
+          CA_EXPIRES_AT=$(date -u -d "$(openssl x509 -noout -enddate <<<"$CA_PEM" | cut -d= -f2)" +%F)
           {
             echo "der_base64=$CA_DER_BASE64"
             echo "fingerprint=$CA_FINGERPRINT"
+            echo "expires_at=$CA_EXPIRES_AT"
             echo "pem<<NVDA_CA_PEM"
             printf '%s\n' "$CA_PEM"
             echo "NVDA_CA_PEM"
@@ -295,6 +297,7 @@ jobs:
       - name: Trust NVDA Remote CA on managed Windows VMs
         env:
           CA_DER_BASE64: ${{ steps.nvda_ca.outputs.der_base64 }}
+          CA_EXPIRES_AT: ${{ steps.nvda_ca.outputs.expires_at }}
           PRIVATE_IP: ${{ steps.discover.outputs.private_ip }}
           VPN_SERVER_IP: ${{ steps.discover.outputs.vpn_server_ip }}
         run: |
@@ -305,11 +308,13 @@ jobs:
             --template-file cloudformation/nvda-remote-ca-trust-template.yml \
             --parameter-overrides \
               CaCertificateDerBase64="$CA_DER_BASE64" \
+              CaExpiresAt="$CA_EXPIRES_AT" \
               VpnHost="$VPN_SERVER_IP" \
               VmHost="$PRIVATE_IP" \
             --no-fail-on-empty-changeset
       - name: Deployment summary
         env:
+          NVDA_CA_EXPIRES_AT: ${{ steps.nvda_ca.outputs.expires_at }}
           NVDA_CA_FINGERPRINT: ${{ steps.nvda_ca.outputs.fingerprint }}
           NVDA_CA_PEM: ${{ steps.nvda_ca.outputs.pem }}
           PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}
@@ -326,6 +331,7 @@ jobs:
             echo "- NVDA Remote server: \`TCP 6837\`"
             echo "- NVDA Remote CA trust stack: \`$NVDA_CA_TRUST_STACK_NAME\`"
             echo "- NVDA Remote CA SHA-256: \`$NVDA_CA_FINGERPRINT\`"
+            echo "- NVDA Remote CA expires: \`$NVDA_CA_EXPIRES_AT\`"
             echo
             echo 'VPN users download the one-click CA installer from VMS Portal.'
             echo 'Manual fallback: save the public CA below as `nvda-remote-ca.crt`:'

@@ -247,6 +247,7 @@ def create_app(
                 "costs": costs,
                 "assignments": assignments,
                 "nvda": nvda_remote_source.get(),
+                "today": datetime.fromtimestamp(clock(), UTC).date(),
             },
         )
 

@@ -363,7 +363,10 @@ The CA is valid for 10 years and changes only in these cases:
   Windows VMs and VMS Portal in the same run. The daily renewal timer never
   rotates it; it logs `NVDA Remote CA expires within a year; rerun the OpenVPN
   deploy workflow to rotate it` to `journalctl -u nvda-remote-cert-renew`
-  instead. Run the workflow at least once a year so this happens in time.
+  instead. A yearly run is not required: any deploy during the CA's last year
+  rotates it. The VMS Portal admin page shows the CA expiry date and an alert
+  once that year starts (and when the CA has expired), so rerun the workflow
+  when the alert appears. The workflow run summary also lists the expiry date.
 - **`/etc/nvda-remote-server/ca` is lost**, for example when the Linux host is
   rebuilt.
 - **An operator rotates it manually** (below).

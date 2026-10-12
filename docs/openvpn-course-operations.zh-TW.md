@@ -365,7 +365,7 @@ workflow 會把公開的 CA 憑證和兩端位址存進 Secrets Manager 的 `pro
 CA 有效期 10 年，只有以下情況會改變：
 
 - **第一次部署**：建立 CA。
-- **部署 workflow 發現 CA 剩不到一年就到期**：自動換新。只有 workflow 會換 CA，因為它會在同一次執行中把新 CA 發佈到 Windows VM 和 VMS Portal。每日續期的 timer 不會換 CA，只會在 `journalctl -u nvda-remote-cert-renew` 留下警告 `NVDA Remote CA expires within a year; rerun the OpenVPN deploy workflow to rotate it`。請至少每年執行一次部署 workflow，確保 CA 能及時換新。
+- **部署 workflow 發現 CA 剩不到一年就到期**：自動換新。只有 workflow 會換 CA，因為它會在同一次執行中把新 CA 發佈到 Windows VM 和 VMS Portal。每日續期的 timer 不會換 CA，只會在 `journalctl -u nvda-remote-cert-renew` 留下警告 `NVDA Remote CA expires within a year; rerun the OpenVPN deploy workflow to rotate it`。不需要每年執行：只要在 CA 到期前最後一年內跑過任一次部署，就會換新。VMS Portal 的 admin 頁面會顯示 CA 到期日，進入最後一年（或已過期）時會出現警告，看到警告時重跑部署 workflow 即可。workflow summary 也會列出到期日。
 - **`/etc/nvda-remote-server/ca` 遺失**：例如 Linux 主機重建。
 - **管理員手動更換**（見下方）。
 

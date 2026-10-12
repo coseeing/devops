@@ -9,12 +9,15 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date, timedelta
 from ipaddress import IPv4Address
 from typing import Protocol
 
 # Must match the subject issued by scripts/nvda-remote-cert.
 CA_SUBJECT = "CN=Coseeing NVDA Remote CA"
 INSTALLER_FILENAME = "nvda-remote-ca-install.cmd"
+# The deploy workflow rotates the CA once it is inside this window.
+CA_ROTATION_WINDOW = timedelta(days=365)
 
 _log = logging.getLogger(__name__)
 
@@ -33,6 +36,15 @@ class NvdaRemoteInfo:
     vm_host: IPv4Address
     port: int
     ca_der: bytes
+    ca_expires_on: date
+
+    def ca_status(self, today: date) -> str:
+        """"ok", "rotation_due" (rerun the deploy workflow), or "expired"."""
+        if today >= self.ca_expires_on:
+            return "expired"
+        if self.ca_expires_on - today <= CA_ROTATION_WINDOW:
+            return "rotation_due"
+        return "ok"
 
     @property
     def ca_sha256(self) -> str:
@@ -90,6 +102,7 @@ def parse_info(raw: str) -> NvdaRemoteInfo:
             IPv4Address(data["vm_host"]),
             port,
             ca_der,
+            date.fromisoformat(data["ca_expires_at"]),
         )
     except (KeyError, TypeError, ValueError, binascii.Error) as exc:
         raise NvdaRemoteFormatError(

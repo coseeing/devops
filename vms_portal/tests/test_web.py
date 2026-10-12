@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from ipaddress import IPv4Address
 
+import pytest
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from fastapi.testclient import TestClient
@@ -163,12 +164,13 @@ class FakeNvdaRemote:
         return self.info
 
 
-def nvda_info() -> NvdaRemoteInfo:
+def nvda_info(expires_on=date(2036, 10, 12)) -> NvdaRemoteInfo:
     return NvdaRemoteInfo(
         IPv4Address("10.250.0.1"),
         IPv4Address("10.0.1.10"),
         6837,
         b"\x30\x82" + bytes(range(200)),
+        expires_on,
     )
 
 
@@ -442,3 +444,33 @@ def test_nvda_remote_installer_requires_login_and_is_audited() -> None:
     assert [(record["username"], record["result"]) for record in downloads] == [
         ("user", "succeeded")
     ]
+
+
+def test_only_admins_see_the_ca_expiry_date() -> None:
+    for username, password, visible in (
+        ("admin", "admin-pass", True),
+        ("user", "user-pass", False),
+    ):
+        client, _, _ = make_client(nvda_remote_source=FakeNvdaRemote(nvda_info()))
+        login(client, username, password)
+        page = client.get("/").text
+        assert ("CA 到期日：2036-10-12" in page) is visible
+        assert "將在一年內到期" not in page
+
+
+@pytest.mark.parametrize(
+    ("expires_on", "message"),
+    [
+        # The test clock is 1970-01-01.
+        (date(1970, 6, 1), "將在一年內到期"),
+        (date(1970, 1, 1), "已過期"),
+    ],
+)
+def test_admin_is_warned_when_the_ca_needs_rotation(expires_on, message) -> None:
+    client, _, _ = make_client(
+        nvda_remote_source=FakeNvdaRemote(nvda_info(expires_on))
+    )
+    login(client, "admin", "admin-pass")
+    page = client.get("/").text
+    assert message in page
+    assert 'role="alert"' in page
