@@ -289,9 +289,42 @@ Secrets Manager secret `nvda-remote-ca-certificate` (part of the
 and hides the section until the secret exists, so redeploy VMS Portal once
 after this change to pick up the setting and its read permission.
 
-The CA changes only if the Linux host is rebuilt and
-`/etc/nvda-remote-server/ca` is lost; then rerun the workflow and have VPN
-users import the new CA.
+#### When the CA changes
+
+The CA is valid for 10 years and changes only in these cases:
+
+- **First deployment** creates it.
+- **The deploy workflow finds it within a year of expiry** and rotates it.
+  Only the workflow rotates the CA, because it also publishes the new CA to the
+  Windows VMs and VMS Portal in the same run. The daily renewal timer never
+  rotates it; it logs `NVDA Remote CA expires within a year; rerun the OpenVPN
+  deploy workflow to rotate it` to `journalctl -u nvda-remote-cert-renew`
+  instead. Run the workflow at least once a year so this happens in time.
+- **`/etc/nvda-remote-server/ca` is lost**, for example when the Linux host is
+  rebuilt.
+- **An operator rotates it manually** (below).
+
+Rerunning the workflow, the yearly server certificate renewal, a changed
+private IPv4 or `vpn_cidr`, a new NVDA Remote image, a rebuilt Windows AMI, and
+a VMS Portal redeploy do not change the CA.
+
+After the CA changes, Windows VMs replace it automatically, VMS Portal shows
+the new fingerprint and installer within 5 minutes, and VPN users must run the
+new installer once (it removes the old course CA). Until they do, NVDA shows the
+certificate prompt.
+
+#### Rotate the CA manually
+
+Rotate it immediately if the CA private key may have been exposed:
+
+```bash
+sudo mv /etc/nvda-remote-server/ca "/etc/nvda-remote-server/ca.retired-$(date +%F)"
+```
+
+Then rerun the OpenVPN deploy workflow right away; it creates a new CA, issues
+a new server certificate, and publishes the CA. Ask every VPN user to download
+and run the installer from VMS Portal again. Delete the retired directory once
+the rotation is confirmed, because it still contains the old private key.
 
 The GitHub deployment role needs permission to manage the
 `nvda-remote-ca-trust` stack, its `AWS::SSM::Association`

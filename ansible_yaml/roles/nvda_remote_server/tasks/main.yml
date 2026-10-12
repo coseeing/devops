@@ -43,6 +43,8 @@
     NVDA_REMOTE_CA_DIR: "{{ nvda_remote_ca_dir }}"
     NVDA_REMOTE_DATA_DIR: "{{ nvda_remote_data_dir }}"
     NVDA_REMOTE_GID: "{{ nvda_remote_gid | string }}"
+    # Safe here: the deploy workflow publishes the CA right after this play.
+    NVDA_REMOTE_ROTATE_CA: "1"
   register: nvda_remote_cert
   changed_when: "'issued' in nvda_remote_cert.stdout"
   notify: Restart NVDA Remote server

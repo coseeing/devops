@@ -336,7 +336,28 @@ NVDA 會先用 Windows 系統的信任憑證庫驗證伺服器憑證，驗證失
 
 workflow 會把公開的 CA 憑證和兩端位址存進 Secrets Manager 的 `nvda-remote-ca-certificate`（屬於 `nvda-remote-ca-trust` stack）。VMS Portal 透過 `NVDA_REMOTE_SECRET_ID` 讀取，secret 還不存在時會自動隱藏這個區塊。這次變更後需要重新部署 VMS Portal 一次，讓它取得新的設定與讀取權限。
 
-只有在 Linux 主機重建、`/etc/nvda-remote-server/ca` 遺失時 CA 才會改變；這時重新執行 workflow，並請 VPN 使用者重新匯入新的 CA。
+#### CA 什麼時候會改變
+
+CA 有效期 10 年，只有以下情況會改變：
+
+- **第一次部署**：建立 CA。
+- **部署 workflow 發現 CA 剩不到一年就到期**：自動換新。只有 workflow 會換 CA，因為它會在同一次執行中把新 CA 發佈到 Windows VM 和 VMS Portal。每日續期的 timer 不會換 CA，只會在 `journalctl -u nvda-remote-cert-renew` 留下警告 `NVDA Remote CA expires within a year; rerun the OpenVPN deploy workflow to rotate it`。請至少每年執行一次部署 workflow，確保 CA 能及時換新。
+- **`/etc/nvda-remote-server/ca` 遺失**：例如 Linux 主機重建。
+- **管理員手動更換**（見下方）。
+
+重跑 workflow、伺服器憑證每年續期、私有 IPv4 或 `vpn_cidr` 改變、更新 NVDA Remote image、重建 Windows AMI、重新部署 VMS Portal，都**不會**改變 CA。
+
+CA 改變後，Windows VM 會自動更新，VMS Portal 最多 5 分鐘後會顯示新的指紋與安裝檔；VPN 使用者需要重新執行一次新的安裝檔（會自動移除舊的課程 CA），在那之前 NVDA 會跳出憑證警告。
+
+#### 手動更換 CA
+
+如果懷疑 CA 私鑰可能外洩，請立即更換：
+
+```bash
+sudo mv /etc/nvda-remote-server/ca "/etc/nvda-remote-server/ca.retired-$(date +%F)"
+```
+
+接著馬上重跑 OpenVPN 部署 workflow：它會建立新 CA、簽發新的伺服器憑證，並發佈新 CA。請所有 VPN 使用者從 VMS Portal 重新下載並執行安裝檔。確認更換完成後，刪除 retired 目錄，因為裡面還留著舊的私鑰。
 
 GitHub 部署角色需要能管理 `nvda-remote-ca-trust` stack、其中的 `AWS::SSM::Association`（`ssm:CreateAssociation`、`ssm:UpdateAssociation`、`ssm:DeleteAssociation`、`ssm:DescribeAssociation`）與 secret（`nvda-remote-ca-certificate-*` 的 `secretsmanager:CreateSecret`、`UpdateSecret`、`PutSecretValue`、`DeleteSecret`、`DescribeSecret`、`TagResource`），以及用 `ec2:DescribeInstances` 讀取主機私有 IPv4。
 

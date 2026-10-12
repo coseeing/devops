@@ -250,6 +250,7 @@ jobs:
           systemctl is-enabled --quiet nvda-remote-server
           systemctl is-enabled --quiet nvda-remote-cert-renew.timer
           openssl verify -CAfile /etc/nvda-remote-server/ca/ca.crt /var/lib/nvda-remote-server/server.crt >/dev/null
+          openssl x509 -in /etc/nvda-remote-server/ca/ca.crt -noout -checkend 31536000 >/dev/null
           ss -ltn | grep -Eq "[:.]6837[[:space:]]"
           REMOTE_CHECKS
       - name: Read NVDA Remote CA certificate

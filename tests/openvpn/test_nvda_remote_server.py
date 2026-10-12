@@ -217,3 +217,59 @@ def test_workflow_publishes_both_relay_addresses() -> None:
     assert "next(ipaddress.ip_network(sys.argv[1]).hosts())" in workflow
     assert 'VpnHost="$VPN_SERVER_IP"' in workflow
     assert 'VmHost="$PRIVATE_IP"' in workflow
+
+
+def make_expiring_ca(env: dict[str, str], ca_dir: Path, days: int) -> bytes:
+    ca_dir.mkdir()
+    assert openssl(
+        env, "req", "-x509", "-new", "-newkey", "rsa:2048", "-nodes",
+        "-days", str(days), "-subj", "/CN=Coseeing NVDA Remote CA",
+        "-keyout", str(ca_dir / "ca.key"), "-out", str(ca_dir / "ca.crt"),
+        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    ).returncode == 0
+    return (ca_dir / "ca.crt").read_bytes()
+
+
+def test_deploy_rotates_a_ca_within_a_year_of_expiry(cert_env, tmp_path) -> None:
+    old_ca = make_expiring_ca(cert_env, tmp_path / "ca", days=100)
+
+    result = ensure({**cert_env, "NVDA_REMOTE_ROTATE_CA": "1"}, "10.250.0.1")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "issued\n"
+    new_ca = tmp_path / "ca/ca.crt"
+    assert new_ca.read_bytes() != old_ca
+    assert (tmp_path / "ca/ca.crt.previous").read_bytes() == old_ca
+    assert openssl(cert_env, "x509", "-in", str(new_ca), "-noout", "-checkend", str(9 * 365 * 86400)).returncode == 0
+    assert openssl(cert_env, "verify", "-CAfile", str(new_ca), str(tmp_path / "data/server.crt")).returncode == 0
+
+
+def test_renewal_timer_keeps_an_expiring_ca_and_warns(cert_env, tmp_path) -> None:
+    old_ca = make_expiring_ca(cert_env, tmp_path / "ca", days=100)
+
+    result = ensure(cert_env, "10.250.0.1")
+
+    assert result.returncode == 0, result.stderr
+    assert "rerun the OpenVPN deploy workflow to rotate it" in result.stderr
+    assert (tmp_path / "ca/ca.crt").read_bytes() == old_ca
+    assert not (tmp_path / "ca/ca.crt.previous").exists()
+
+
+def test_deploy_keeps_a_ca_with_more_than_a_year_left(cert_env, tmp_path) -> None:
+    old_ca = make_expiring_ca(cert_env, tmp_path / "ca", days=400)
+
+    result = ensure({**cert_env, "NVDA_REMOTE_ROTATE_CA": "1"}, "10.250.0.1")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert (tmp_path / "ca/ca.crt").read_bytes() == old_ca
+
+
+def test_only_the_deploy_play_may_rotate_the_ca() -> None:
+    ensure_task = named_task("Ensure NVDA Remote private CA and server certificate")
+    assert ensure_task["environment"]["NVDA_REMOTE_ROTATE_CA"] == "1"
+    timer_service = (ROLE / "templates/nvda-remote-cert-renew.service.j2").read_text()
+    assert "NVDA_REMOTE_ROTATE_CA" not in timer_service
+    workflow = (ROOT / ".github/workflows/deploy-openvpn.yml").read_text()
+    assert "openssl x509 -in /etc/nvda-remote-server/ca/ca.crt -noout -checkend 31536000" in workflow

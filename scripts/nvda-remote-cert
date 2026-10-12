@@ -6,6 +6,11 @@
 # The CA is created once and reused, so clients only import it once. It is
 # name-constrained to private IPv4 ranges and cannot sign usable DNS names,
 # which limits the impact of a leaked CA key on machines that trust it.
+# A CA within a year of expiry is replaced only when NVDA_REMOTE_ROTATE_CA=1,
+# which the deploy workflow sets because it also publishes the new CA to the
+# Windows VMs and VMS Portal. Other callers, such as the daily renewal timer,
+# keep the current CA and print a warning instead, so clients never see a CA
+# they have not been given.
 # The server certificate is reissued when missing, when its IP SANs change,
 # when it no longer chains to the CA, or within 30 days of expiry. Prints
 # "issued" when it wrote a new server certificate.
@@ -19,6 +24,8 @@ readonly SERVER_SUBJECT="/CN=Coseeing NVDA Remote"
 readonly CA_DAYS=3650
 readonly SERVER_DAYS=397
 readonly RENEW_SECONDS=$((30 * 24 * 3600))
+readonly CA_RENEW_SECONDS=$((365 * 24 * 3600))
+readonly ROTATE_CA="${NVDA_REMOTE_ROTATE_CA:-0}"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -69,7 +76,15 @@ build_san() {
 
 ensure_ca() {
   make_dir 0755 root:root "$CA_DIR"
-  [[ -s "$CA_DIR/ca.key" && -s "$CA_DIR/ca.crt" ]] && return 0
+  if [[ -s "$CA_DIR/ca.key" && -s "$CA_DIR/ca.crt" ]]; then
+    openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend "$CA_RENEW_SECONDS" >/dev/null && return 0
+    if [[ "$ROTATE_CA" != 1 ]]; then
+      printf 'warning: NVDA Remote CA expires within a year; rerun the OpenVPN deploy workflow to rotate it\n' >&2
+      return 0
+    fi
+    # The retired certificate is kept for reference; its key is not.
+    mv -f -- "$CA_DIR/ca.crt" "$CA_DIR/ca.crt.previous"
+  fi
   rm -f -- "$CA_DIR/ca.key" "$CA_DIR/ca.crt"
   (
     umask 077
