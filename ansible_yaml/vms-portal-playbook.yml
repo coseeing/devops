@@ -36,7 +36,7 @@
           COST_TABLE={{ cost_table }}
           COST_WORKGROUP={{ cost_workgroup }}
           TRUSTED_PROXY_IPS=127.0.0.1
-          NVDA_REMOTE_SECRET_ID=nvda-remote-ca-certificate
+          NVDA_REMOTE_SECRET_ID=prod/vms-portal/nvda-remote
 
     - name: Write portal Compose file
       copy:

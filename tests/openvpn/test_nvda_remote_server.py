@@ -204,7 +204,7 @@ def test_cert_helper_rejects_invalid_arguments(cert_env, tmp_path, args) -> None
 def test_connection_details_secret_matches_portal_schema() -> None:
     text = CA_TRUST_TEMPLATE.read_text()
     assert "Type: AWS::SecretsManager::Secret" in text
-    assert "Name: nvda-remote-ca-certificate" in text
+    assert "Name: prod/vms-portal/nvda-remote" in text
     assert (
         '{"ca_der_base64":"${CaCertificateDerBase64}","vpn_host":"${VpnHost}",'
         '"vm_host":"${VmHost}","port":${Port}}'

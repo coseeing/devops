@@ -28,7 +28,7 @@ Resources:
   ConnectionDetailsSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: nvda-remote-ca-certificate
+      Name: prod/vms-portal/nvda-remote
       Description: NVDA Remote CA certificate and relay addresses for VMS Portal
       SecretString: !Sub '{"ca_der_base64":"${CaCertificateDerBase64}","vpn_host":"${VpnHost}","vm_host":"${VmHost}","port":${Port}}'
 

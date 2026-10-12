@@ -426,7 +426,7 @@ def test_portal_reads_only_the_nvda_remote_connection_secret() -> None:
     statement = template.split("Sid: ReadNvdaRemoteConnectionDetails", 1)[1].split("- Sid:", 1)[0]
     assert "secretsmanager:GetSecretValue" in statement
     assert "secretsmanager:PutSecretValue" not in statement
-    assert ":secret:nvda-remote-ca-certificate-*" in statement
+    assert ":secret:prod/vms-portal/nvda-remote-??????" in statement
 
     playbook = (ROOT / "ansible_yaml/vms-portal-playbook.yml").read_text()
-    assert "NVDA_REMOTE_SECRET_ID=nvda-remote-ca-certificate" in playbook
+    assert "NVDA_REMOTE_SECRET_ID=prod/vms-portal/nvda-remote" in playbook

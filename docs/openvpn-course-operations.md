@@ -61,6 +61,16 @@ The Linux host and Windows instances must be in the same VPC, and the Linux
 host must be able to reach the Windows private subnet. Do not broaden the
 Windows rule to the whole VPC when the Linux private IPv4 `/32` is available.
 
+The protected `a11y-village-production` environment must provide
+`AWS_GITHUB_ACTION_ROLE`, `EC2_SSH_KEY`, and `OPENVPN_SSH_KNOWN_HOSTS` secrets.
+The last value is a complete `known_hosts` entry for the public IP returned by
+the Linux stack, for example `<PUBLIC_IP> ssh-ed25519 <BASE64_KEY>`. Obtain the
+host public key through a trusted console or SSM session and verify its
+fingerprint out of band before saving it. Do not trust an unverified
+`ssh-keyscan` result. Update the secret when the instance, public IP, or SSH
+host key changes; otherwise deployment and profile management intentionally
+fail closed.
+
 ## Validate and Deploy
 
 Run `.github/workflows/deploy-openvpn.yml` with **Actions > Validate or deploy
@@ -73,7 +83,7 @@ course OpenVPN > Run workflow**. Supply these inputs exactly:
 | `vpn_endpoint` | Stable hostname or IPv4 address, without `https://` and without a port |
 | `windows_subnet_id` | The subnet ID containing the managed Windows VMs |
 | `vpn_cidr` | Non-overlapping private IPv4 client network (default `10.250.0.0/24`) |
-| `client_days` | Shared certificate lifetime from 1 through 365 days (default `30`) |
+| `client_days` | Initial shared certificate lifetime from 1 through 365 days (default `30`); later deploys preserve the existing certificate |
 | `confirm_endpoint` | Required only for deploy; type the exact same string as `vpn_endpoint`, including case and punctuation |
 
 Select `validate` first. Its credential-free job runs repository and static
@@ -84,7 +94,47 @@ confirmation skips the deploy job. Only after that guard, the deploy job uses
 read-only AWS discovery for the Linux host and Windows/VPC CIDRs, validates the
 deployment inputs against those discovered values, creates or updates only the
 dedicated OpenVPN distribution stack, and then invokes the OpenVPN Ansible
-playbook. It does not modify Security Groups.
+playbook. A deploy creates the initial shared certificate only when none exists;
+later deploys preserve the current certificate and do not share the profile or
+update its Secrets Manager value. It does not modify Security Groups.
+
+## Rotate or Share from GitHub Actions
+
+Run `.github/workflows/manage-openvpn-profile.yml` with **Actions > Manage
+course OpenVPN profile > Run workflow**. This workflow is manually dispatched
+and offers two operations:
+
+- `share` leaves the certificate unchanged, creates a new 10-minute URL for
+  the current profile, and updates `prod/vms-portal/openvpn-profile`.
+- `rotate` requires `confirm_rotation` to equal `ROTATE course-shared`. It
+  creates and validates a new certificate for `client_days`, revokes the old
+  certificate, activates the new profile, then shares it and updates the same
+  secret.
+
+Both operations store JSON fields `url` and `expires_at`. The URL is masked and
+is not written to a GitHub output or job summary. Deployment and profile
+management use the same concurrency group, so deploy, rotate, and share cannot
+race with one another. Its `queue: max` setting retains up to 100 pending runs
+instead of replacing the previously pending run. The GitHub OIDC role needs
+`secretsmanager:DescribeSecret`, `secretsmanager:CreateSecret`, and
+`secretsmanager:PutSecretValue` scoped to
+`arn:aws:secretsmanager:ap-northeast-1:<ACCOUNT_ID>:secret:prod/vms-portal/openvpn-profile-??????`.
+The six `?` characters intentionally match the random six-character suffix
+that Secrets Manager adds to the ARN. An operator retrieving the URL separately
+needs `secretsmanager:GetSecretValue` on the same ARN.
+
+If rotation fails before activation, the host command restores the previous
+profile state where possible. If rotation succeeds but sharing or the Secrets
+Manager write fails, the new certificate remains active; rerun this workflow
+with `action=share` to publish it without another rotation.
+
+If the SSH connection is lost and GitHub cannot tell whether rotation
+completed, do not immediately rerun `rotate`. Log in through a trusted path,
+run `sudo openvpn-course status`, and inspect
+`sudo cat /var/lib/openvpn-course/active-client-cn`. A newly rotated CN contains
+the rotation timestamp. If the new CN and expected expiry are active, rerun
+only `action=share`; rerun `rotate` only after confirming that the old CN is
+still active.
 
 Do not trigger a deploy until the endpoint, Linux stack, Windows subnet, VPN
 CIDR, and certificate lifetime have been reviewed by the operator. Local checks
@@ -145,6 +195,14 @@ temporary signing credentials expire first. Send the URL only through a
 trusted channel and treat anyone who receives it as able to download the
 shared profile during its valid period.
 
+The **Manage course OpenVPN profile** workflow invokes this command for both
+`share` and successful `rotate` operations and stores
+`{"url":"...","expires_at":"..."}` in the dedicated
+`prod/vms-portal/openvpn-profile` secret. Secrets Manager does not extend the
+URL lifetime, so an authorized operator must retrieve and deliver it before
+`expires_at`. Running `share` manually prints a new URL but does not update the
+Secrets Manager value.
+
 Immediately after `aws s3 presign` returns, the displayed `Expires no later than` bound is
 calculated immediately as that returned-clock time plus 600 seconds; the
 signature timestamp can only be at or before the command returned, so this is
@@ -171,6 +229,12 @@ certificate/profile, then revokes the currently active shared certificate and
 reloads OpenVPN. Existing sessions may be disconnected, and every previously
 distributed profile becomes unusable for a new connection. Distribute the new
 profile to every participant after rotation.
+
+Prefer the **Manage course OpenVPN profile** workflow with `action=rotate`, the
+desired `client_days`, and exact confirmation `ROTATE course-shared`. It runs
+the host operation below and publishes the resulting profile URL to Secrets
+Manager. An X.509 certificate's expiry cannot be extended in place; changing
+the lifetime always means issuing and activating a replacement certificate.
 
 Run:
 
@@ -284,7 +348,7 @@ same CA.
   `Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
 
 The workflow stores the public CA certificate and both relay addresses in the
-Secrets Manager secret `nvda-remote-ca-certificate` (part of the
+Secrets Manager secret `prod/vms-portal/nvda-remote` (part of the
 `nvda-remote-ca-trust` stack). VMS Portal reads it with `NVDA_REMOTE_SECRET_ID`
 and hides the section until the secret exists, so redeploy VMS Portal once
 after this change to pick up the setting and its read permission.
@@ -332,7 +396,7 @@ The GitHub deployment role needs permission to manage the
 `ssm:DescribeAssociation`), and its secret (`secretsmanager:CreateSecret`,
 `secretsmanager:UpdateSecret`, `secretsmanager:PutSecretValue`,
 `secretsmanager:DeleteSecret`, `secretsmanager:DescribeSecret`,
-`secretsmanager:TagResource` on `nvda-remote-ca-certificate-*`), plus
+`secretsmanager:TagResource` on `prod/vms-portal/nvda-remote-??????`), plus
 `ec2:DescribeInstances` to read the host private IPv4.
 
 Operator checks on the Linux host:

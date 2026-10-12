@@ -92,7 +92,7 @@ def test_installer_is_ascii_crlf_and_embeds_only_the_ca() -> None:
 def test_source_is_disabled_without_secret_id() -> None:
     client = FakeClient([])
     assert NvdaRemoteSource(client, "").get() is None
-    assert NvdaRemoteSource(None, "nvda-remote-ca-certificate").get() is None
+    assert NvdaRemoteSource(None, "prod/vms-portal/nvda-remote").get() is None
     assert client.calls == []
 
 
@@ -100,7 +100,7 @@ def test_source_caches_and_keeps_last_good_value_on_failure() -> None:
     now = [0.0]
     client = FakeClient([secret(), RuntimeError("throttled"), secret(vm_host="10.0.1.11")])
     source = NvdaRemoteSource(
-        client, "nvda-remote-ca-certificate", clock=lambda: now[0], refresh_seconds=300
+        client, "prod/vms-portal/nvda-remote", clock=lambda: now[0], refresh_seconds=300
     )
 
     assert str(source.get().vm_host) == "10.0.1.10"
@@ -111,9 +111,9 @@ def test_source_caches_and_keeps_last_good_value_on_failure() -> None:
     assert str(source.get().vm_host) == "10.0.1.10"
     now[0] = 602
     assert str(source.get().vm_host) == "10.0.1.11"
-    assert client.calls[0] == {"SecretId": "nvda-remote-ca-certificate"}
+    assert client.calls[0] == {"SecretId": "prod/vms-portal/nvda-remote"}
 
 
 def test_source_returns_none_when_secret_was_never_readable() -> None:
-    source = NvdaRemoteSource(FakeClient([RuntimeError("missing")]), "nvda-remote-ca-certificate")
+    source = NvdaRemoteSource(FakeClient([RuntimeError("missing")]), "prod/vms-portal/nvda-remote")
     assert source.get() is None
