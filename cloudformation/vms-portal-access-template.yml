@@ -162,6 +162,11 @@ Resources:
               - secretsmanager:DescribeSecret
               - secretsmanager:GetSecretValue
             Resource: !Ref AuthSecretArn
+          - Sid: ReadNvdaRemoteConnectionDetails
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:nvda-remote-ca-certificate-*
           - Sid: RunPortalCostQueries
             Effect: Allow
             Action:

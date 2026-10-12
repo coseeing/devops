@@ -1,0 +1,13 @@
+{% if nvda %}
+<section aria-labelledby="nvda-remote-heading">
+  <h2 id="nvda-remote-heading">NVDA Remote 遠端協助</h2>
+  <p>兩端選「連線到控制伺服器」，輸入下列位址、port 與相同的 key。</p>
+  <dl>
+    <dt>本機電腦（已連上 OpenVPN）</dt><dd>{{ nvda.vpn_host }}，port {{ nvda.port }}</dd>
+    <dt>Windows VM</dt><dd>{{ nvda.vm_host }}，port {{ nvda.port }}</dd>
+  </dl>
+  <p>第一次使用前，請在本機電腦下載並執行憑證安裝檔（只需一次，不需要系統管理員權限；Windows 會詢問是否安裝憑證，請選「是」）。之後連線就不會出現憑證警告。Windows VM 已自動安裝，不需要執行。</p>
+  <p><a href="/nvda-remote/nvda-remote-ca-install.cmd" download>下載 NVDA Remote 憑證安裝檔</a></p>
+  <p><small>CA SHA-256 指紋：<span class="fingerprint">{{ nvda.ca_sha256 }}</span></small></p>
+</section>
+{% endif %}

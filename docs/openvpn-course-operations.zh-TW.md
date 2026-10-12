@@ -327,17 +327,18 @@ Windows App 的 PC 連線操作可對照 [Microsoft 官方說明](https://learn.
 NVDA 會先用 Windows 系統的信任憑證庫驗證伺服器憑證，驗證失敗才會跳出「憑證不受信任」的警告。因此部署時會在 Linux 主機的 `/etc/nvda-remote-server/ca` 建立一個私有 CA（只建立一次，私鑰不會離開主機），並簽發一張 IP SAN 剛好是上表兩個位址的伺服器憑證。這個 CA 加了 name constraints，只能簽私有 IPv4 位址，不能簽可用的網域名稱或公開 IP，所以信任它也無法被拿來攔截其他網站。`nvda-remote-cert-renew.timer` 每天檢查，在到期前 30 天或位址改變時自動重簽伺服器憑證；用戶端信任的 CA 不變。
 
 - **Windows VM：** workflow 會部署 `nvda-remote-ca-trust` CloudFormation stack，也就是一個 SSM State Manager association，把 CA 匯入所有 `VmPortalManaged=true` VM 的 `LocalMachine\Root`。目前關機中或之後才建立的 VM，只要 SSM agent 上線也會套用，並每天重跑一次。VM 上不會跳警告。
-- **VPN 使用者：** 匯入公開 CA 一次即可。從 workflow 執行結果的 summary（或在 Linux 上執行 `sudo cat /etc/nvda-remote-server/ca/ca.crt`）複製 PEM 內容存成 `nvda-remote-ca.crt`，先與 summary 裡的 SHA-256 指紋核對，再在 PowerShell 執行（不需要系統管理員權限，Windows 會跳出一次確認）：
+- **VPN 使用者：** 登入 VMS Portal，在「NVDA Remote 遠端協助」區塊下載 `nvda-remote-ca-install.cmd`，在連 OpenVPN 的那台電腦上點兩下執行一次即可。不需要系統管理員權限，Windows 會詢問一次是否安裝憑證，選「是」。這個區塊也會列出兩端的連線位址與 CA 的 SHA-256 指紋。下載需要登入 Portal，並會記錄在 audit log。
 
-  ```powershell
-  Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
-  ```
+  沒有執行安裝檔的使用者會看到 NVDA 的憑證警告，而且伺服器憑證每年更新後還會再跳一次。
 
-  沒有匯入 CA 的使用者則會看到 NVDA 的憑證警告，而且伺服器憑證每年更新後還會再跳一次。
+  手動備案：從 workflow summary 複製 PEM 存成 `nvda-remote-ca.crt`，再執行
+  `Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`。
+
+workflow 會把公開的 CA 憑證和兩端位址存進 Secrets Manager 的 `nvda-remote-ca-certificate`（屬於 `nvda-remote-ca-trust` stack）。VMS Portal 透過 `NVDA_REMOTE_SECRET_ID` 讀取，secret 還不存在時會自動隱藏這個區塊。這次變更後需要重新部署 VMS Portal 一次，讓它取得新的設定與讀取權限。
 
 只有在 Linux 主機重建、`/etc/nvda-remote-server/ca` 遺失時 CA 才會改變；這時重新執行 workflow，並請 VPN 使用者重新匯入新的 CA。
 
-GitHub 部署角色需要能管理 `nvda-remote-ca-trust` stack 與其中的 `AWS::SSM::Association`（`ssm:CreateAssociation`、`ssm:UpdateAssociation`、`ssm:DeleteAssociation`、`ssm:DescribeAssociation`）。
+GitHub 部署角色需要能管理 `nvda-remote-ca-trust` stack、其中的 `AWS::SSM::Association`（`ssm:CreateAssociation`、`ssm:UpdateAssociation`、`ssm:DeleteAssociation`、`ssm:DescribeAssociation`）與 secret（`nvda-remote-ca-certificate-*` 的 `secretsmanager:CreateSecret`、`UpdateSecret`、`PutSecretValue`、`DeleteSecret`、`DescribeSecret`、`TagResource`），以及用 `ec2:DescribeInstances` 讀取主機私有 IPv4。
 
 Linux 主機上的檢查指令：
 

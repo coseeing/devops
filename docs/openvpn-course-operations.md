@@ -271,27 +271,36 @@ same CA.
   into `LocalMachine\Root` on every instance tagged `VmPortalManaged=true`.
   It also applies to VMs that are stopped now or launched later once their SSM
   agent checks in, and re-runs daily. No prompt appears on the VMs.
-- **VPN users:** import the public CA once. Copy the PEM block from the
-  workflow run summary (or `sudo cat /etc/nvda-remote-server/ca/ca.crt` on the
-  Linux host) into `nvda-remote-ca.crt`, check the SHA-256 fingerprint against
-  the summary, and run in PowerShell (no administrator rights needed; Windows
-  asks for one confirmation):
-
-  ```powershell
-  Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
-  ```
-
+- **VPN users:** sign in to VMS Portal, open the **NVDA Remote** section,
+  download `nvda-remote-ca-install.cmd`, and run it once on the PC they use with
+  OpenVPN. No administrator rights are needed; Windows asks once whether to
+  install the certificate. The section also lists both relay addresses and the
+  CA SHA-256 fingerprint. Downloads require a portal login and are audited.
   Users who skip this see NVDA's certificate prompt instead, and again after
   each yearly server certificate renewal.
+
+  Manual fallback: copy the PEM block from the workflow run summary into
+  `nvda-remote-ca.crt` and run
+  `Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
+
+The workflow stores the public CA certificate and both relay addresses in the
+Secrets Manager secret `nvda-remote-ca-certificate` (part of the
+`nvda-remote-ca-trust` stack). VMS Portal reads it with `NVDA_REMOTE_SECRET_ID`
+and hides the section until the secret exists, so redeploy VMS Portal once
+after this change to pick up the setting and its read permission.
 
 The CA changes only if the Linux host is rebuilt and
 `/etc/nvda-remote-server/ca` is lost; then rerun the workflow and have VPN
 users import the new CA.
 
 The GitHub deployment role needs permission to manage the
-`nvda-remote-ca-trust` stack and its `AWS::SSM::Association`
+`nvda-remote-ca-trust` stack, its `AWS::SSM::Association`
 (`ssm:CreateAssociation`, `ssm:UpdateAssociation`, `ssm:DeleteAssociation`,
-`ssm:DescribeAssociation`).
+`ssm:DescribeAssociation`), and its secret (`secretsmanager:CreateSecret`,
+`secretsmanager:UpdateSecret`, `secretsmanager:PutSecretValue`,
+`secretsmanager:DeleteSecret`, `secretsmanager:DescribeSecret`,
+`secretsmanager:TagResource` on `nvda-remote-ca-certificate-*`), plus
+`ec2:DescribeInstances` to read the host private IPv4.
 
 Operator checks on the Linux host:
 

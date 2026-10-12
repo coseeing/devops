@@ -83,3 +83,13 @@ def test_cost_identifiers_can_be_overridden_and_must_be_safe() -> None:
         Settings.from_env(
             {"AUTH_SECRET_ID": "prod/vms-portal/auth", "COST_DATABASE": "bad;drop"}
         )
+
+
+def test_nvda_remote_secret_is_optional_and_must_be_safe() -> None:
+    assert Settings.from_env({"AUTH_SECRET_ID": "x"}).nvda_remote_secret_id == ""
+    settings = Settings.from_env(
+        {"AUTH_SECRET_ID": "x", "NVDA_REMOTE_SECRET_ID": "nvda-remote-ca-certificate"}
+    )
+    assert settings.nvda_remote_secret_id == "nvda-remote-ca-certificate"
+    with pytest.raises(ConfigurationError):
+        Settings.from_env({"AUTH_SECRET_ID": "x", "NVDA_REMOTE_SECRET_ID": "bad id"})

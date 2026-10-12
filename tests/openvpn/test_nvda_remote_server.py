@@ -199,3 +199,21 @@ def test_cert_helper_rejects_invalid_arguments(cert_env, tmp_path, args) -> None
     )
     assert result.returncode != 0
     assert not (tmp_path / "data/server.crt").exists()
+
+
+def test_connection_details_secret_matches_portal_schema() -> None:
+    text = CA_TRUST_TEMPLATE.read_text()
+    assert "Type: AWS::SecretsManager::Secret" in text
+    assert "Name: nvda-remote-ca-certificate" in text
+    assert (
+        '{"ca_der_base64":"${CaCertificateDerBase64}","vpn_host":"${VpnHost}",'
+        '"vm_host":"${VmHost}","port":${Port}}'
+    ) in text
+
+
+def test_workflow_publishes_both_relay_addresses() -> None:
+    workflow = (ROOT / ".github/workflows/deploy-openvpn.yml").read_text()
+    assert "--query 'Reservations[0].Instances[0].PrivateIpAddress'" in workflow
+    assert "next(ipaddress.ip_network(sys.argv[1]).hosts())" in workflow
+    assert 'VpnHost="$VPN_SERVER_IP"' in workflow
+    assert 'VmHost="$PRIVATE_IP"' in workflow

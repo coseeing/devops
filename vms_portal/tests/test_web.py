@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from datetime import UTC, datetime
 from decimal import Decimal
 from ipaddress import IPv4Address
@@ -12,6 +14,7 @@ from vms_portal.audit import AuditLogger
 from vms_portal.config import Settings
 from vms_portal.costs import InstanceCost
 from vms_portal.ec2 import VmInstance
+from vms_portal.nvda_remote import NvdaRemoteInfo
 from vms_portal.secrets import AuthSnapshot, CredentialRecord
 from vms_portal.web import create_app
 
@@ -152,7 +155,24 @@ class FakeAssignments:
         return assignment
 
 
-def make_client(cost_service=None, assignment_repository=None):
+class FakeNvdaRemote:
+    def __init__(self, info=None) -> None:
+        self.info = info
+
+    def get(self):
+        return self.info
+
+
+def nvda_info() -> NvdaRemoteInfo:
+    return NvdaRemoteInfo(
+        IPv4Address("10.250.0.1"),
+        IPv4Address("10.0.1.10"),
+        6837,
+        b"\x30\x82" + bytes(range(200)),
+    )
+
+
+def make_client(cost_service=None, assignment_repository=None, nvda_remote_source=None):
     ec2 = FakeEc2()
     audit_events = []
     app = create_app(
@@ -162,6 +182,7 @@ def make_client(cost_service=None, assignment_repository=None):
         cost_service=cost_service or FakeCosts(),
         assignment_repository=assignment_repository or FakeAssignments(),
         audit_logger=AuditLogger(audit_events.append),
+        nvda_remote_source=nvda_remote_source or FakeNvdaRemote(),
         clock=lambda: 1_000.0,
     )
     return TestClient(app, base_url="https://testserver"), ec2, audit_events
@@ -373,3 +394,51 @@ def test_assignment_update_is_admin_only_and_requires_csrf() -> None:
 
     assert response.status_code == 403
     assert assignments.upsert_calls == []
+
+
+def test_nvda_remote_section_is_hidden_until_details_exist() -> None:
+    client, _, _ = make_client()
+    login(client, "user", "user-pass")
+    assert "NVDA Remote" not in client.get("/").text
+    assert client.get("/nvda-remote/nvda-remote-ca-install.cmd").status_code == 404
+
+
+def test_nvda_remote_section_shows_both_addresses_to_users_and_admins() -> None:
+    info = nvda_info()
+    for username, password in (("user", "user-pass"), ("admin", "admin-pass")):
+        client, _, _ = make_client(nvda_remote_source=FakeNvdaRemote(info))
+        login(client, username, password)
+        page = client.get("/").text
+        assert "NVDA Remote 遠端協助" in page
+        assert "10.250.0.1，port 6837" in page
+        assert "10.0.1.10，port 6837" in page
+        assert info.ca_sha256 in page
+        assert 'href="/nvda-remote/nvda-remote-ca-install.cmd"' in page
+
+
+def test_nvda_remote_installer_requires_login_and_is_audited() -> None:
+    info = nvda_info()
+    client, _, audit_events = make_client(nvda_remote_source=FakeNvdaRemote(info))
+
+    anonymous = client.get(
+        "/nvda-remote/nvda-remote-ca-install.cmd", follow_redirects=False
+    )
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"] == "/login"
+
+    login(client, "user", "user-pass")
+    response = client.get("/nvda-remote/nvda-remote-ca-install.cmd")
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="nvda-remote-ca-install.cmd"'
+    )
+    assert response.headers["cache-control"] == "no-store"
+    assert response.text == info.installer_cmd()
+    downloads = [
+        record
+        for record in map(json.loads, audit_events)
+        if record["event"] == "nvda_remote.ca_installer.downloaded"
+    ]
+    assert [(record["username"], record["result"]) for record in downloads] == [
+        ("user", "succeeded")
+    ]
