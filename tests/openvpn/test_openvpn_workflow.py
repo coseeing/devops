@@ -102,6 +102,42 @@ def test_workflow_remote_check_verifies_active_docker_course_firewall_path() -> 
     assert "nft list table ip openvpn_course_nat" in remote_run
 
 
+def test_deploy_publishes_masked_profile_url_to_dedicated_secret() -> None:
+    workflow = load_workflow()
+    deploy = workflow["jobs"]["deploy"]
+    steps = {step.get("name"): step for step in deploy["steps"]}
+    step_names = [step.get("name") for step in deploy["steps"]]
+
+    assert deploy["concurrency"] == {
+        "group": "openvpn-course-production",
+        "cancel-in-progress": False,
+    }
+    assert deploy["env"]["PROFILE_SECRET_ID"] == (
+        "prod/vms-portal/openvpn-profile"
+    )
+    assert step_names.index("Verify remote OpenVPN service state") < (
+        step_names.index("Publish OpenVPN profile download secret")
+    )
+
+    publish = steps["Publish OpenVPN profile download secret"]
+    assert publish["env"] == {
+        "HOST_IP": "${{ steps.discover.outputs.host_ip }}",
+        "SSH_KEY_PATH": "${{ runner.temp }}/openvpn-ec2-key",
+    }
+    publish_run = publish["run"]
+    assert "sudo openvpn-course share" in publish_run
+    assert 'echo "::add-mask::${PROFILE_URL}"' in publish_run
+    assert "jq -n" in publish_run
+    assert "'{url:$url,expires_at:$expires_at}'" in publish_run
+    assert "aws secretsmanager describe-secret" in publish_run
+    assert "aws secretsmanager put-secret-value" in publish_run
+    assert "aws secretsmanager create-secret" in publish_run
+    assert "ResourceNotFoundException" in publish_run
+    assert 'cat "$DESCRIBE_ERROR" >&2' in publish_run
+    assert "$GITHUB_OUTPUT" not in publish_run
+    assert "$GITHUB_STEP_SUMMARY" not in publish_run
+
+
 def test_operations_doc_covers_manual_security_and_end_to_end_checks() -> None:
     text = (ROOT / "docs/openvpn-course-operations.md").read_text()
     for required in (

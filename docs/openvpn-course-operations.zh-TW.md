@@ -153,7 +153,7 @@ aud: sts.amazonaws.com
 sub: repo:<OWNER>/<REPO>:environment:a11y-village-production
 ```
 
-這是信任條件摘要，不是完整 IAM policy。角色還需要可查 CloudFormation stack、EC2 subnet/VPC，以及建立／更新專用 distribution stack 所涉及的 S3 bucket、bucket policy 與既有角色 inline policy 等權限。具體 policy 應限定本次資源；`CAPABILITY_NAMED_IAM` 只是 CloudFormation 的能力確認，**不會自行授予 IAM 權限**。OpenVPN workflow 不會替自己建立這個部署角色。
+這是信任條件摘要，不是完整 IAM policy。角色還需要可查 CloudFormation stack、EC2 subnet/VPC，以及建立／更新專用 distribution stack 所涉及的 S3 bucket、bucket policy 與既有角色 inline policy 等權限。部署完成後，workflow 也會建立或更新 `prod/vms-portal/openvpn-profile`，因此部署角色必須具備 `secretsmanager:DescribeSecret`、`secretsmanager:CreateSecret` 與 `secretsmanager:PutSecretValue`。Secret ARN 應精確限制為 `arn:aws:secretsmanager:ap-northeast-1:<ACCOUNT_ID>:secret:prod/vms-portal/openvpn-profile-??????`；尾端六個 `?` 是 IAM 單字元萬用字元，用來匹配 Secrets Manager 自動附加的六碼 suffix，不可省略。需要取 URL 的管理員角色另需對同一 ARN 有 `secretsmanager:GetSecretValue`。`CAPABILITY_NAMED_IAM` 只是 CloudFormation 的能力確認，**不會自行授予 IAM 權限**。OpenVPN workflow 不會替自己建立這個部署角色。
 
 ### 4.2 VPN client 憑證
 
@@ -220,7 +220,13 @@ aws cloudformation deploy \
 4. 若 environment 設了 reviewer，完成該 environment 的審核。
 5. 確認 `deploy` job 實際執行成功，Summary 有 bucket 名稱和 remote checks passed。
 
-remote checks 會看 OpenVPN / firewall 的 systemd 啟用狀態、UDP 1194、IPv4 forwarding 及防火牆鏈。它沒有從外網 Mac 做真正 VPN / RDP 測試，也沒有自動把 `.ovpn` 發給學員。
+remote checks 會看 OpenVPN / firewall 的 systemd 啟用狀態、UDP 1194、IPv4 forwarding 及防火牆鏈。通過後，workflow 會在 Linux 執行 `sudo openvpn-course share`，遮罩 URL，不寫入 Actions output 或 Summary，再把以下 JSON 建立或更新到 Tokyo Region 的 `prod/vms-portal/openvpn-profile`：
+
+```json
+{"url":"https://...","expires_at":"2026-10-12T01:23:45Z"}
+```
+
+部署不會每次輪替 client 憑證；它分享 Ansible 已建立或保留的目前 profile。production deploy 會排隊逐一執行，避免兩個 run 互相刪除分享物件後又把舊 URL 寫回 Secret。Secret 內的 URL 最多有效 10 分鐘，`expires_at` 是最晚到期時間；Secrets Manager 不會替它延長期限。workflow 仍沒有從外網 Mac 做真正 VPN / RDP 測試，也不會主動通知學員。
 
 ### 6.2 建立最多 10 分鐘的下載連結
 
@@ -238,7 +244,7 @@ sudo openvpn-course status
 sudo openvpn-course share
 ```
 
-`share` 會上傳目前 profile、輸出下載網址和最晚到期時間。把網址透過可信任管道交給學員，學員於有效時間內用瀏覽器下載。不需要給學員 S3 登入權限或 AWS key，也不需要把 bucket 設成公開。
+`share` 會上傳目前 profile、輸出下載網址和最晚到期時間。GitHub Actions 的成功 deploy 已自動執行同一指令，並把 URL 與 `expires_at` 寫入 `prod/vms-portal/openvpn-profile`；只有獲授權的管理員才應讀取該 Secret，再透過可信任管道交給學員。手動執行 `share` 只會在終端機顯示新 URL，**不會同步更新 Secrets Manager**。不需要給學員 S3 登入權限或 AWS key，也不需要把 bucket 設成公開。
 
 每次 `share` 會嘗試刪除上次記錄的物件，因此**重新 share 可能讓上一個連結提早失效**；同一批人應使用同一次產生的連結。清理或上傳失敗時，重新執行並使用新連結。
 

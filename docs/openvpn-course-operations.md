@@ -78,7 +78,19 @@ confirmation skips the deploy job. Only after that guard, the deploy job uses
 read-only AWS discovery for the Linux host and Windows/VPC CIDRs, validates the
 deployment inputs against those discovered values, creates or updates only the
 dedicated OpenVPN distribution stack, and then invokes the OpenVPN Ansible
-playbook. It does not modify Security Groups.
+playbook. After the remote checks pass, it runs `sudo openvpn-course share`,
+masks the bearer URL from subsequent Actions output, and creates or updates
+`prod/vms-portal/openvpn-profile` in Secrets Manager with JSON fields `url` and
+`expires_at`. The GitHub OIDC deployment role therefore needs
+`secretsmanager:DescribeSecret`, `secretsmanager:CreateSecret`, and
+`secretsmanager:PutSecretValue` scoped to
+`arn:aws:secretsmanager:ap-northeast-1:<ACCOUNT_ID>:secret:prod/vms-portal/openvpn-profile-??????`.
+The six `?` characters intentionally match the random six-character suffix
+that Secrets Manager adds to the ARN. An operator retrieving the URL separately
+needs `secretsmanager:GetSecretValue` on the same ARN. Production deploy jobs
+are serialized so one run cannot overwrite the secret with a URL whose object
+was deleted by another run. The workflow does not print the URL in its summary
+and does not modify Security Groups.
 
 Do not trigger a deploy until the endpoint, Linux stack, Windows subnet, VPN
 CIDR, and certificate lifetime have been reviewed by the operator. Local checks
@@ -138,6 +150,14 @@ signature age. The effective lifetime can be shorter if the EC2 role's
 temporary signing credentials expire first. Send the URL only through a
 trusted channel and treat anyone who receives it as able to download the
 shared profile during its valid period.
+
+A successful GitHub Actions deploy invokes this command automatically and
+stores `{"url":"...","expires_at":"..."}` in the dedicated
+`prod/vms-portal/openvpn-profile` secret. It shares the current certificate; it
+does not rotate the shared certificate on every deployment. Secrets Manager
+does not extend the URL lifetime, so an authorized operator must retrieve and
+deliver it before `expires_at`. Running `share` manually prints a new URL but
+does not update the Secrets Manager value.
 
 Immediately after `aws s3 presign` returns, the displayed `Expires no later than` bound is
 calculated immediately as that returned-clock time plus 600 seconds; the
