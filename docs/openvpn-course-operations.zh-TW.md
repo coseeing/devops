@@ -1,10 +1,10 @@
 # OpenVPN 中文部署與 Mac 連線操作手冊
 
-本手冊對應此 repository 的 [GitHub Actions workflow](../.github/workflows/deploy-openvpn.yml)、[Ansible playbook](../ansible_yaml/openvpn-server-playbook.yml) 與 [S3 CloudFormation 範本](../cloudformation/openvpn-distribution-template.yml)。外部安裝說明查核日期：2026-09-24。
+本手冊對應此 repository 的 [部署 workflow](../.github/workflows/deploy-openvpn.yml)、[憑證管理 workflow](../.github/workflows/manage-openvpn-profile.yml)、[Ansible playbook](../ansible_yaml/openvpn-server-playbook.yml) 與 [S3 CloudFormation 範本](../cloudformation/openvpn-distribution-template.yml)。外部安裝說明查核日期：2026-09-24。
 
 這套服務把 OpenVPN 安裝在**既有 Ubuntu Linux EC2**，讓 Mac 經 VPN 連到 Windows VM 的私有 IP，只放行 TCP 3389 遠端桌面。它不是 AWS Client VPN，也不是有登入網頁的 OpenVPN Access Server。
 
-最短流程：準備 AWS/GitHub 權限與網路 → Actions 執行 `validate` → 執行 `deploy`（自動建立 S3）→ 管理員 SSH 執行 `share` → Mac 下載 `.ovpn`、匯入 OpenVPN Connect → 使用 Windows App 連私有 IP。
+最短流程：準備 AWS/GitHub 權限與網路 → Actions 執行 `validate` → 執行 `deploy`（自動建立 S3 與首次憑證）→ Actions 執行獨立的 `share` → Mac 下載 `.ovpn`、匯入 OpenVPN Connect → 使用 Windows App 連私有 IP。日後只有管理員明確執行 `rotate` 才會淘汰舊憑證。
 
 ## 1. 整個系統的架構
 
@@ -26,9 +26,12 @@ flowchart TB
     Policy -.-> Runtime[EC2 instance profile / runtime role]
     Runtime -.-> Linux
     Linux --> PKI[本機 root 專用 PKI 與 current.ovpn]
-    Admin -->|SSH 執行 openvpn-course share| Linux
+    Admin -->|手動選擇 rotate 或 share| ProfileAction[GitHub profile 管理 workflow]
+    ProfileAction -->|SSH 執行 openvpn-course| Linux
     Linux -->|上傳 profiles 下的隨機物件| Bucket
-    Linux -->|產生最多 600 秒的下載連結| Admin
+    Linux -->|產生最多 600 秒的下載連結| ProfileAction
+    ProfileAction --> Secret[Secrets Manager: prod/vms-portal/openvpn-profile]
+    Secret -->|授權管理員讀取 URL| Admin
     Admin -->|透過可信任管道交付連結| Mac[Mac 使用者]
     Bucket -->|HTTPS 下載 .ovpn| Mac
 ```
@@ -100,7 +103,7 @@ VMS Portal 提供主機查詢，不是 VPN 登入服務，也不在 RDP 資料�
 | `vpn_endpoint` | Mac 實際連線的穩定網域或 IPv4。不可加 `https://`、路徑或 `:1194` | 例如 `vpn.example.com` | DNS 管理者或 Linux EC2 公開 IPv4 |
 | `windows_subnet_id` | 要允許 RDP 的 Windows 所在 subnet ID，不是 CIDR，也不是 SG ID | 例如 `subnet-0123456789abcdef0` | EC2 → Windows instance → Networking → Subnet ID |
 | `vpn_cidr` | 分配給 VPN client 的虛擬 IPv4 網段，不是 VPC 或 Windows subnet | 預設 `10.250.0.0/24` | 管理員規劃；需用 RFC1918 私有網段，prefix `/16`～`/29` |
-| `client_days` | 新建共享 client 憑證的有效天數，整數 `1`～`365` | 預設 `30` | 依課程長度安排 |
+| `client_days` | 首次部署且憑證不存在時使用的有效天數，整數 `1`～`365`；後續 deploy 不會更新既有憑證 | 預設 `30` | 依課程長度安排 |
 | `confirm_endpoint` | 部署確認，必須與輸入的 `vpn_endpoint` **逐字相同**，包含大小寫及標點 | `vpn.example.com` | 複製本次 `vpn_endpoint` |
 
 `vpn_cidr` 不可與 AWS VPC / Windows 網段重疊，也應避開使用者家中、公司和其他 VPN 網段；後者 workflow 無法代查。`windows_subnet_id` 只接受一個 subnet，若目標 Windows 分散在其他 subnet，目前部署不會一起放行。
@@ -129,6 +132,7 @@ confirm_endpoint: vpn.example.com
 | --- | --- | --- | --- |
 | `AWS_GITHUB_ACTION_ROLE` | Actions 經 OIDC 取得 AWS 部署權限 | IAM → Roles → 部署角色 → 複製 ARN | 否 |
 | `EC2_SSH_KEY` | Actions / 管理員 SSH 登入 Linux | 建立 Linux EC2 時使用的 SSH private key，由保管者提供 | 否 |
+| `OPENVPN_SSH_KNOWN_HOSTS` | Actions 驗證連到正確的 Linux 主機 | 經可信任的 Console 或 SSM 取得 SSH host public key，並由管理員以另一管道核對 fingerprint | 否 |
 | EC2 runtime 暫時憑證 | Linux 上傳 S3、簽下載網址 | EC2 instance profile 提供；不用手填 access key | 否 |
 | `course-vpn.ovpn` | Mac 的 VPN 連線憑證與設定 | 部署後由管理員執行 `share` 或 `export` | **是** |
 | Windows username / password | 登入遠端 Windows 桌面 | Windows 管理員提供；本專案 Windows build 的相關來源見下文 | **是，獨立交付** |
@@ -141,9 +145,10 @@ confirm_endpoint: vpn.example.com
 ```text
 AWS_GITHUB_ACTION_ROLE = arn:aws:iam::<AWS_ACCOUNT_ID>:role/<DEPLOY_ROLE_NAME>
 EC2_SSH_KEY = 對應 Linux EC2 的完整 SSH 私鑰內容
+OPENVPN_SSH_KNOWN_HOSTS = <LINUX_PUBLIC_IP> ssh-ed25519 <BASE64_HOST_PUBLIC_KEY>
 ```
 
-第一個值是 **Role ARN**，不是 Access Key ID。第二個是私鑰內容，不是 `.pem` 路徑或公鑰。已儲存的 GitHub secret 不能在介面重新讀回明文；請向原保管者取得或依管理程序更換。AWS EC2 不提供重新下載原始私鑰的功能。
+第一個值是 **Role ARN**，不是 Access Key ID。第二個是私鑰內容，不是 `.pem` 路徑或公鑰。第三個必須是 stack 回傳公開 IP 對應的完整 `known_hosts` 記錄；請從可信任的 Console 或 SSM session 取得 host public key，並用另一管道核對 fingerprint 後才儲存，不能直接信任未核對的 `ssh-keyscan` 結果。EC2 重建、公開 IP 或 SSH host key 改變時要同步更新，否則 workflow 會安全地拒絕 SSH。已儲存的 GitHub secret 不能在介面重新讀回明文；請向原保管者取得或依管理程序更換。AWS EC2 不提供重新下載原始私鑰的功能。
 
 如果 AWS 尚未設定 GitHub OIDC，請由 IAM 管理員依 [GitHub 官方 AWS OIDC 指南](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) 建立 provider 與部署角色。此 workflow 使用 environment，因此信任條件應對應：
 
@@ -153,7 +158,7 @@ aud: sts.amazonaws.com
 sub: repo:<OWNER>/<REPO>:environment:a11y-village-production
 ```
 
-這是信任條件摘要，不是完整 IAM policy。角色還需要可查 CloudFormation stack、EC2 subnet/VPC，以及建立／更新專用 distribution stack 所涉及的 S3 bucket、bucket policy 與既有角色 inline policy 等權限。部署完成後，workflow 也會建立或更新 `prod/vms-portal/openvpn-profile`，因此部署角色必須具備 `secretsmanager:DescribeSecret`、`secretsmanager:CreateSecret` 與 `secretsmanager:PutSecretValue`。Secret ARN 應精確限制為 `arn:aws:secretsmanager:ap-northeast-1:<ACCOUNT_ID>:secret:prod/vms-portal/openvpn-profile-??????`；尾端六個 `?` 是 IAM 單字元萬用字元，用來匹配 Secrets Manager 自動附加的六碼 suffix，不可省略。需要取 URL 的管理員角色另需對同一 ARN 有 `secretsmanager:GetSecretValue`。`CAPABILITY_NAMED_IAM` 只是 CloudFormation 的能力確認，**不會自行授予 IAM 權限**。OpenVPN workflow 不會替自己建立這個部署角色。
+這是信任條件摘要，不是完整 IAM policy。角色還需要可查 CloudFormation stack、EC2 subnet/VPC，以及建立／更新專用 distribution stack 所涉及的 S3 bucket、bucket policy 與既有角色 inline policy 等權限。獨立的憑證管理 workflow 會建立或更新 `prod/vms-portal/openvpn-profile`，因此同一個 GitHub OIDC role 必須具備 `secretsmanager:DescribeSecret`、`secretsmanager:CreateSecret` 與 `secretsmanager:PutSecretValue`。Secret ARN 應精確限制為 `arn:aws:secretsmanager:ap-northeast-1:<ACCOUNT_ID>:secret:prod/vms-portal/openvpn-profile-??????`；尾端六個 `?` 是 IAM 單字元萬用字元，用來匹配 Secrets Manager 自動附加的六碼 suffix，不可省略。需要取 URL 的管理員角色另需對同一 ARN 有 `secretsmanager:GetSecretValue`。`CAPABILITY_NAMED_IAM` 只是 CloudFormation 的能力確認，**不會自行授予 IAM 權限**。OpenVPN workflow 不會替自己建立這個部署角色。
 
 ### 4.2 VPN client 憑證
 
@@ -220,15 +225,28 @@ aws cloudformation deploy \
 4. 若 environment 設了 reviewer，完成該 environment 的審核。
 5. 確認 `deploy` job 實際執行成功，Summary 有 bucket 名稱和 remote checks passed。
 
-remote checks 會看 OpenVPN / firewall 的 systemd 啟用狀態、UDP 1194、IPv4 forwarding 及防火牆鏈。通過後，workflow 會在 Linux 執行 `sudo openvpn-course share`，遮罩 URL，不寫入 Actions output 或 Summary，再把以下 JSON 建立或更新到 Tokyo Region 的 `prod/vms-portal/openvpn-profile`：
+remote checks 會看 OpenVPN / firewall 的 systemd 啟用狀態、UDP 1194、IPv4 forwarding 及防火牆鏈。首次部署會在沒有 client 憑證時建立初始憑證；之後重跑 deploy 會保留目前憑證，不會 rotate、share 或更新 Secrets Manager。workflow 仍沒有從外網 Mac 做真正 VPN / RDP 測試。
+
+### 6.2 使用 GitHub Actions 輪替或重新分享
+
+到 GitHub → Actions → **Manage course OpenVPN profile** → **Run workflow**：
+
+- `action=share`：保留目前憑證，只重新產生 10 分鐘下載 URL。
+- `action=rotate`：設定 `client_days`，並在 `confirm_rotation` 精確輸入 `ROTATE course-shared`。workflow 會產生並驗證新憑證、撤銷舊憑證、啟用新 profile，再建立下載 URL。
+
+X.509 憑證的到期日不能原地延長；所謂延展仍是簽發並啟用一張指定新效期的憑證。兩種 action 都會遮罩 URL，不寫入 Actions output 或 Summary，再把以下 JSON 建立或更新到 Tokyo Region 的 `prod/vms-portal/openvpn-profile`：
 
 ```json
 {"url":"https://...","expires_at":"2026-10-12T01:23:45Z"}
 ```
 
-部署不會每次輪替 client 憑證；它分享 Ansible 已建立或保留的目前 profile。production deploy 會排隊逐一執行，避免兩個 run 互相刪除分享物件後又把舊 URL 寫回 Secret。Secret 內的 URL 最多有效 10 分鐘，`expires_at` 是最晚到期時間；Secrets Manager 不會替它延長期限。workflow 仍沒有從外網 Mac 做真正 VPN / RDP 測試，也不會主動通知學員。
+deploy、rotate 與 share 共用同一個 concurrency group，會排隊逐一執行；`queue: max` 最多保留 100 個 pending run，不會用新 run 取代原本等待中的 run。Secret 內的 URL 最多有效 10 分鐘，`expires_at` 是最晚到期時間；Secrets Manager 不會替它延長期限。只有獲授權的管理員才應讀取 Secret，再透過可信任管道交給學員。
 
-### 6.2 建立最多 10 分鐘的下載連結
+如果 rotate 在啟用前失敗，主機端指令會盡可能回復原憑證。如果 rotate 已成功，但後續 share 或 Secrets Manager 寫入失敗，新憑證仍是有效版本；重新執行 `action=share` 補發即可，不要再 rotate 一次。
+
+如果 SSH 中斷，GitHub 無法判斷 rotate 是否已完成，**不要立刻再跑 rotate**。先從可信任管道登入主機，執行 `sudo openvpn-course status` 檢查憑證到期日，再執行 `sudo cat /var/lib/openvpn-course/active-client-cn` 查看作用中的 CN；新輪替 CN 會帶有輪替時間戳。若新 CN 與預期到期日已生效，只跑 `action=share`；只有確認仍是舊 CN 時才重新 rotate。
+
+### 6.3 手動建立最多 10 分鐘的下載連結
 
 管理員在 **Mac 終端機**登入 Linux；把範例中的 key 路徑與主機 IP 換成真實值：
 
@@ -244,7 +262,7 @@ sudo openvpn-course status
 sudo openvpn-course share
 ```
 
-`share` 會上傳目前 profile、輸出下載網址和最晚到期時間。GitHub Actions 的成功 deploy 已自動執行同一指令，並把 URL 與 `expires_at` 寫入 `prod/vms-portal/openvpn-profile`；只有獲授權的管理員才應讀取該 Secret，再透過可信任管道交給學員。手動執行 `share` 只會在終端機顯示新 URL，**不會同步更新 Secrets Manager**。不需要給學員 S3 登入權限或 AWS key，也不需要把 bucket 設成公開。
+`share` 會上傳目前 profile、輸出下載網址和最晚到期時間。手動執行只會在終端機顯示新 URL，**不會同步更新 Secrets Manager**；要自動更新 Secret，請使用前一節的 `action=share`。不需要給學員 S3 登入權限或 AWS key，也不需要把 bucket 設成公開。
 
 每次 `share` 會嘗試刪除上次記錄的物件，因此**重新 share 可能讓上一個連結提早失效**；同一批人應使用同一次產生的連結。清理或上傳失敗時，重新執行並使用新連結。
 
@@ -266,7 +284,7 @@ sequenceDiagram
     Note over S,M: URL 到期不會撤銷已下載的憑證
 ```
 
-### 6.3 不經 S3：管理員透過 SSH 匯出
+### 6.4 不經 S3：管理員透過 SSH 匯出
 
 在 **Linux shell** 執行（目的檔若已存在，預設會拒絕覆寫）：
 
@@ -329,6 +347,8 @@ Windows App 的 PC 連線操作可對照 [Microsoft 官方說明](https://learn.
 
 `rotate` 會要求輸入精確文字 `ROTATE course-shared`。這是**全體換證**，既有連線可能中斷，所有人都必須取得新 `.ovpn`。完成後再跑 `share`、交付新檔，請 Mac 使用者替換舊 profile。
 
+一般情況建議使用 GitHub Actions 的 **Manage course OpenVPN profile**：`action=rotate` 會完成輪替後自動 share 並更新 Secrets Manager；`action=share` 則只補發目前 profile 的新連結，不會更換憑證。
+
 `share` 與 `rotate` 有互斥鎖，若出現 `another rotate or share operation is already in progress`，待前一操作完成再重試。不要手動刪除 PKI；現有設計未提供外部 CA 備份，主機重建且 PKI 遺失時，須重新部署並發放新 profile。
 
 ## 9. 驗收與常見問題
@@ -357,18 +377,20 @@ nc -vz -w 5 10.0.8.25 445
 | 建 bucket / policy AccessDenied | 部署 role 的 CloudFormation、S3 與 IAM 權限；不是 Mac 的問題 |
 | S3 測試或 `share` AccessDenied | Linux 是否掛正確 runtime role、物件 policy 是否存在、是否有其他顯式 Deny |
 | SSH timeout / Permission denied | Linux 公開 IP、TCP 22、runner 可達性、`ubuntu` 帳號與 private key |
+| SSH host key verification failed | `OPENVPN_SSH_KNOWN_HOSTS` 是否包含 stack 回傳公開 IP 的正確 host key；先從可信任管道重新核對 fingerprint，不要關閉驗證 |
 | Firewall preflight 失敗 | `iptables-nft`、`DOCKER-USER` 與 `FORWARD` 是否連接；不要靠清空主機防火牆處理 |
 | 下載連結失效 | 超過 10 分鐘、暫時 AWS 憑證提早到期，或管理員再次 share 刪除了舊物件；請管理員發新連結 |
 | VPN 連不上 | endpoint DNS / 公開 IP、UDP 1194、OpenVPN 狀態、profile 是否過期或已輪替 |
 | VPN 已連線但 RDP 失敗 | VM running、使用私有 IP、目標在設定 subnet、Windows RDP 開啟、SG 允許 Linux 私有 IP `/32`、NACL 與 Windows 防火牆 |
 | 換網路後路由異常 | Mac 所在 LAN 或其他 VPN 是否與 Windows / VPN CIDR 重疊 |
-| 修改 `client_days` 沒有效果 | 既有憑證不會自動更新，使用 `rotate` 後重新匯入 |
+| deploy 時修改 `client_days` 沒有效果 | deploy 會保留既有憑證；使用憑證管理 workflow 的 `action=rotate` 後重新匯入 |
 
-本文件依据 repository 設定與官方 client 文件整理；這次只新增文件，沒有操作 AWS、部署主機、讀取真實 secrets、簽發下載連結或在 Mac 上安裝軟體。Actions 靜態檢查、遠端服務檢查、Mac VPN 連線與 Windows RDP 登入是不同驗證層級，實際環境結果須分別確認。
+本文件依據 repository 設定與官方 client 文件整理；repository 測試不會操作 AWS、部署主機、讀取真實 secrets、簽發下載連結或在 Mac 上安裝軟體。Actions 靜態檢查、遠端服務檢查、Mac VPN 連線與 Windows RDP 登入是不同驗證層級，實際環境結果須分別確認。
 
 ## 10. 維護時應對照的原始檔
 
 - [GitHub Actions：參數、Secrets、部署與遠端檢查](../.github/workflows/deploy-openvpn.yml)
+- [GitHub Actions：輪替憑證、重新分享與更新 Secrets Manager](../.github/workflows/manage-openvpn-profile.yml)
 - [輸入檢查：CIDR、endpoint、憑證天數](../scripts/validate-openvpn-inputs.py)
 - [S3 bucket、lifecycle 與 IAM policy](../cloudformation/openvpn-distribution-template.yml)
 - [Ansible：安裝、PKI 與 S3 測試](../ansible_yaml/roles/openvpn_server/tasks/main.yml)
