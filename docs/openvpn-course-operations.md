@@ -241,22 +241,57 @@ password in an unprotected shared location.
 The same playbook runs the NVDA Remote relay server
 ([jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer), a
 digest-pinned Docker image) on the Linux host as the systemd unit
-`nvda-remote-server`, on TCP 6837 with host networking. It uses its own
-self-signed certificate generated once under `/var/lib/nvda-remote-server`,
-not the private key bundled in the public image, and logs connection events
-without channel keys.
+`nvda-remote-server`, on TCP 6837 with host networking. It logs connection
+events without channel keys.
 
 | Client | NVDA Remote host | Port |
 | --- | --- | --- |
-| Mac (OpenVPN connected) | First address of `vpn_cidr`, e.g. `10.250.0.1` | 6837 |
+| VPN user's own Windows PC (OpenVPN connected) | First address of `vpn_cidr`, e.g. `10.250.0.1` | 6837 |
 | Windows VM | Linux host **Private IPv4**, e.g. `10.0.1.10` | 6837 |
 
-Both sides choose **Connect to a control server**, enter the same host-specific
-address shown above and port 6837, and type the same key; one side controls,
-the other is controlled. On the first connection NVDA warns that the
-certificate is not trusted: compare its fingerprint with
-`sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -fingerprint -sha256`
-and then choose to trust it.
+Both sides choose **Connect to a control server**, enter the address for their
+side and port 6837, and type the same key; one side controls, the other is
+controlled.
+
+### Certificate trust
+
+NVDA verifies the relay certificate against the Windows trust store first and
+only shows an "untrusted certificate" prompt when that fails. The deployment
+therefore keeps a private CA on the Linux host in
+`/etc/nvda-remote-server/ca` (created once, private key never leaves the host)
+and issues a server certificate whose IP SANs are exactly the two addresses
+above. The CA is name-constrained to private IPv4 ranges and cannot sign usable
+DNS names or public IPs, so trusting it cannot be abused to intercept other
+sites. A daily `nvda-remote-cert-renew.timer` reissues the server certificate
+30 days before expiry, or when the addresses change; clients keep trusting the
+same CA.
+
+- **Windows VMs:** the workflow deploys the `nvda-remote-ca-trust`
+  CloudFormation stack, an SSM State Manager association that imports the CA
+  into `LocalMachine\Root` on every instance tagged `VmPortalManaged=true`.
+  It also applies to VMs that are stopped now or launched later once their SSM
+  agent checks in, and re-runs daily. No prompt appears on the VMs.
+- **VPN users:** import the public CA once. Copy the PEM block from the
+  workflow run summary (or `sudo cat /etc/nvda-remote-server/ca/ca.crt` on the
+  Linux host) into `nvda-remote-ca.crt`, check the SHA-256 fingerprint against
+  the summary, and run in PowerShell (no administrator rights needed; Windows
+  asks for one confirmation):
+
+  ```powershell
+  Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
+  ```
+
+  Users who skip this see NVDA's certificate prompt instead, and again after
+  each yearly server certificate renewal.
+
+The CA changes only if the Linux host is rebuilt and
+`/etc/nvda-remote-server/ca` is lost; then rerun the workflow and have VPN
+users import the new CA.
+
+The GitHub deployment role needs permission to manage the
+`nvda-remote-ca-trust` stack and its `AWS::SSM::Association`
+(`ssm:CreateAssociation`, `ssm:UpdateAssociation`, `ssm:DeleteAssociation`,
+`ssm:DescribeAssociation`).
 
 Operator checks on the Linux host:
 
@@ -264,6 +299,8 @@ Operator checks on the Linux host:
 systemctl status nvda-remote-server
 sudo journalctl -u nvda-remote-server -n 100
 sudo nft list chain inet openvpn_course_input input
+systemctl list-timers nvda-remote-cert-renew.timer
+sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -ext subjectAltName -enddate
 ```
 
 ## Verify Split Tunnel and Blocked Traffic

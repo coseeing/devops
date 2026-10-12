@@ -43,11 +43,11 @@ jobs:
         working-directory: vms_portal
       - run: uv run pytest ../tests/openvpn -q
         working-directory: vms_portal
-      - run: uvx cfn-lint cloudformation/openvpn-distribution-template.yml
+      - run: uvx cfn-lint cloudformation/openvpn-distribution-template.yml cloudformation/nvda-remote-ca-trust-template.yml
       - name: Validate OpenVPN shell scripts
         run: |
           set -euo pipefail
-          for script in scripts/openvpn-course scripts/openvpn-course-firewall; do
+          for script in scripts/openvpn-course scripts/openvpn-course-firewall scripts/nvda-remote-cert; do
             bash -n "$script"
           done
       - run: python3 -m py_compile scripts/validate-openvpn-inputs.py ansible_yaml/filter_plugins/openvpn_filters.py
@@ -76,6 +76,7 @@ jobs:
     env:
       AWS_REGION: ap-northeast-1
       DISTRIBUTION_STACK_NAME: openvpn-course-profile-distribution
+      NVDA_CA_TRUST_STACK_NAME: nvda-remote-ca-trust
       RUNTIME_ROLE_NAME: coseeing-ec2-common
     steps:
       - uses: actions/checkout@v4
@@ -238,10 +239,50 @@ jobs:
           nft list chain inet openvpn_course_input input | grep -Fq 'tcp dport 6837 drop'
           systemctl is-active --quiet nvda-remote-server
           systemctl is-enabled --quiet nvda-remote-server
+          systemctl is-enabled --quiet nvda-remote-cert-renew.timer
+          openssl verify -CAfile /etc/nvda-remote-server/ca/ca.crt /var/lib/nvda-remote-server/server.crt >/dev/null
           ss -ltn | grep -Eq "[:.]6837[[:space:]]"
           REMOTE_CHECKS
+      - name: Read NVDA Remote CA certificate
+        id: nvda_ca
+        env:
+          HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
+        run: |
+          set -euo pipefail
+
+          # Public certificate only; the CA private key never leaves the host.
+          CA_PEM=$(ssh -i "$SSH_KEY_PATH" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "ubuntu@$HOST_IP" \
+            'sudo cat /etc/nvda-remote-server/ca/ca.crt')
+          CA_DER_BASE64=$(openssl x509 -outform DER <<<"$CA_PEM" | base64 -w0)
+          CA_SUBJECT=$(openssl x509 -noout -subject -nameopt RFC2253 <<<"$CA_PEM")
+          [[ "$CA_SUBJECT" == "subject=CN=Coseeing NVDA Remote CA" ]]
+          CA_FINGERPRINT=$(openssl x509 -noout -fingerprint -sha256 <<<"$CA_PEM" | cut -d= -f2)
+          {
+            echo "der_base64=$CA_DER_BASE64"
+            echo "fingerprint=$CA_FINGERPRINT"
+            echo "pem<<NVDA_CA_PEM"
+            printf '%s\n' "$CA_PEM"
+            echo "NVDA_CA_PEM"
+          } >> "$GITHUB_OUTPUT"
+      - name: Trust NVDA Remote CA on managed Windows VMs
+        env:
+          CA_DER_BASE64: ${{ steps.nvda_ca.outputs.der_base64 }}
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "$NVDA_CA_TRUST_STACK_NAME" \
+            --template-file cloudformation/nvda-remote-ca-trust-template.yml \
+            --parameter-overrides CaCertificateDerBase64="$CA_DER_BASE64" \
+            --no-fail-on-empty-changeset
       - name: Deployment summary
         env:
+          NVDA_CA_FINGERPRINT: ${{ steps.nvda_ca.outputs.fingerprint }}
+          NVDA_CA_PEM: ${{ steps.nvda_ca.outputs.pem }}
           PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}
         run: |
           set -euo pipefail
@@ -254,6 +295,14 @@ jobs:
             echo "- Deployment: \`passed\`"
             echo "- Remote checks: \`passed\`"
             echo "- NVDA Remote server: \`TCP 6837\`"
+            echo "- NVDA Remote CA trust stack: \`$NVDA_CA_TRUST_STACK_NAME\`"
+            echo "- NVDA Remote CA SHA-256: \`$NVDA_CA_FINGERPRINT\`"
+            echo
+            echo 'Save the public CA below as `nvda-remote-ca.crt` for VPN users (import once):'
+            echo
+            echo '```'
+            printf '%s\n' "$NVDA_CA_PEM"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove EC2 SSH key
         if: always()

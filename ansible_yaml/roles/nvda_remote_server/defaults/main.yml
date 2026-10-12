@@ -9,5 +9,6 @@ nvda_remote_uid: 991
 nvda_remote_gid: 991
 # 1 logs connection events and client source addresses, never channel keys.
 nvda_remote_loglevel: 1
-nvda_remote_cert_days: 3650
-nvda_remote_cert_cn: nvda-remote-course
+nvda_remote_ca_dir: /etc/nvda-remote-server/ca
+# IPv4 addresses clients dial; each becomes an IP SAN on the server certificate.
+nvda_remote_cert_ips: []

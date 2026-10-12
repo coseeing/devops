@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew the NVDA Remote server certificate when it nears expiry
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=NVDA_REMOTE_CA_DIR={{ nvda_remote_ca_dir }}
+Environment=NVDA_REMOTE_DATA_DIR={{ nvda_remote_data_dir }}
+Environment=NVDA_REMOTE_GID={{ nvda_remote_gid }}
+ExecStart=/bin/sh -c 'if /usr/local/libexec/nvda-remote-cert ensure {{ nvda_remote_cert_ips | join(",") }} | grep -qx issued; then systemctl restart {{ nvda_remote_service_name }}; fi'

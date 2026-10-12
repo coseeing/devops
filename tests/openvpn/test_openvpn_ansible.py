@@ -35,6 +35,10 @@ def test_playbook_uses_only_openvpn_and_nvda_remote_roles() -> None:
         {
             "role": "nvda_remote_server",
             "nvda_remote_port": "{{ openvpn_nvda_remote_port }}",
+            "nvda_remote_cert_ips": [
+                "{{ openvpn_vpn_cidr | cidr_first_host }}",
+                "{{ ansible_default_ipv4.address }}",
+            ],
         },
     ]
     rendered = str(playbook)

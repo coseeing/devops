@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Keep a private CA and an IP-only NVDA Remote server certificate signed by it.
+#
+# usage: nvda-remote-cert ensure <ip>[,<ip>...]
+#
+# The CA is created once and reused, so clients only import it once. It is
+# name-constrained to private IPv4 ranges and cannot sign usable DNS names,
+# which limits the impact of a leaked CA key on machines that trust it.
+# The server certificate is reissued when missing, when its IP SANs change,
+# when it no longer chains to the CA, or within 30 days of expiry. Prints
+# "issued" when it wrote a new server certificate.
+set -euo pipefail
+
+readonly CA_DIR="${NVDA_REMOTE_CA_DIR:-/etc/nvda-remote-server/ca}"
+readonly DATA_DIR="${NVDA_REMOTE_DATA_DIR:-/var/lib/nvda-remote-server}"
+readonly SERVER_GROUP="${NVDA_REMOTE_GID:-991}"
+readonly CA_SUBJECT="/CN=Coseeing NVDA Remote CA"
+readonly SERVER_SUBJECT="/CN=Coseeing NVDA Remote"
+readonly CA_DAYS=3650
+readonly SERVER_DAYS=397
+readonly RENEW_SECONDS=$((30 * 24 * 3600))
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+# Ownership is applied only as root, so tests can run the script unprivileged.
+place() {
+  local mode=$1 owner=$2 src=$3 dest=$4
+  install -m "$mode" "$src" "$dest"
+  if (( EUID == 0 )); then
+    chown "$owner" "$dest"
+  fi
+}
+
+make_dir() {
+  local mode=$1 owner=$2 dir=$3
+  install -d -m "$mode" "$dir"
+  if (( EUID == 0 )); then
+    chown "$owner" "$dir"
+  fi
+}
+
+usage() {
+  printf 'usage: nvda-remote-cert ensure <ip>[,<ip>...]\n' >&2
+  exit 2
+}
+
+valid_ipv4() {
+  local ip=$1 octet
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  IFS=. read -r -a octets <<<"$ip"
+  for octet in "${octets[@]}"; do
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+build_san() {
+  local list=$1 ip san=
+  IFS=, read -r -a ips <<<"$list"
+  (( ${#ips[@]} > 0 )) || die "at least one IP address is required"
+  for ip in "${ips[@]}"; do
+    valid_ipv4 "$ip" || die "invalid IPv4 address: $ip"
+    san+="${san:+,}IP:$ip"
+  done
+  printf '%s\n' "$san"
+}
+
+ensure_ca() {
+  make_dir 0755 root:root "$CA_DIR"
+  [[ -s "$CA_DIR/ca.key" && -s "$CA_DIR/ca.crt" ]] && return 0
+  rm -f -- "$CA_DIR/ca.key" "$CA_DIR/ca.crt"
+  (
+    umask 077
+    openssl req -x509 -new -newkey rsa:3072 -nodes -sha256 \
+      -days "$CA_DAYS" \
+      -subj "$CA_SUBJECT" \
+      -keyout "$CA_DIR/ca.key.tmp" \
+      -out "$CA_DIR/ca.crt.tmp" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "nameConstraints=critical,permitted;IP:10.0.0.0/255.0.0.0,permitted;IP:172.16.0.0/255.240.0.0,permitted;IP:192.168.0.0/255.255.0.0,permitted;DNS:nvda-remote.invalid" \
+      2>/dev/null
+  )
+  chmod 0600 "$CA_DIR/ca.key.tmp"
+  chmod 0644 "$CA_DIR/ca.crt.tmp"
+  mv -f -- "$CA_DIR/ca.key.tmp" "$CA_DIR/ca.key"
+  mv -f -- "$CA_DIR/ca.crt.tmp" "$CA_DIR/ca.crt"
+}
+
+server_is_current() {
+  local san=$1
+  [[ -s "$DATA_DIR/server.key" && -s "$DATA_DIR/server.crt" && -s "$DATA_DIR/server.san" ]] || return 1
+  [[ "$(cat "$DATA_DIR/server.san")" == "$san" ]] || return 1
+  openssl x509 -in "$DATA_DIR/server.crt" -noout -checkend "$RENEW_SECONDS" >/dev/null || return 1
+  openssl verify -CAfile "$CA_DIR/ca.crt" "$DATA_DIR/server.crt" >/dev/null 2>&1 || return 1
+}
+
+issue_server() {
+  local san=$1 work
+  work=$(mktemp -d "${TMPDIR:-/tmp}/nvda-remote-cert.XXXXXX")
+  trap 'rm -rf -- "$work"' RETURN
+  printf '%s\n' \
+    "basicConstraints=critical,CA:FALSE" \
+    "keyUsage=critical,digitalSignature,keyEncipherment" \
+    "extendedKeyUsage=serverAuth" \
+    "subjectAltName=$san" >"$work/ext.cnf"
+  (
+    umask 077
+    openssl req -new -newkey rsa:3072 -nodes -sha256 \
+      -subj "$SERVER_SUBJECT" \
+      -keyout "$work/server.key" \
+      -out "$work/server.csr" 2>/dev/null
+  )
+  openssl x509 -req -sha256 \
+    -in "$work/server.csr" \
+    -CA "$CA_DIR/ca.crt" -CAkey "$CA_DIR/ca.key" \
+    -set_serial "0x$(openssl rand -hex 16)" \
+    -days "$SERVER_DAYS" \
+    -extfile "$work/ext.cnf" \
+    -out "$work/server.crt" 2>/dev/null
+  openssl verify -CAfile "$CA_DIR/ca.crt" "$work/server.crt" >/dev/null \
+    || die "issued server certificate does not verify against the CA"
+  printf '%s\n' "$san" >"$work/server.san"
+
+  make_dir 0750 "root:$SERVER_GROUP" "$DATA_DIR"
+  place 0640 "root:$SERVER_GROUP" "$work/server.key" "$DATA_DIR/server.key.new"
+  place 0644 root:root "$work/server.crt" "$DATA_DIR/server.crt.new"
+  place 0644 root:root "$work/server.san" "$DATA_DIR/server.san.new"
+  mv -f -- "$DATA_DIR/server.key.new" "$DATA_DIR/server.key"
+  mv -f -- "$DATA_DIR/server.crt.new" "$DATA_DIR/server.crt"
+  mv -f -- "$DATA_DIR/server.san.new" "$DATA_DIR/server.san"
+  printf 'issued\n'
+}
+
+[[ $# -eq 2 && "$1" == ensure ]] || usage
+san=$(build_san "$2")
+ensure_ca
+server_is_current "$san" || issue_server "$san"

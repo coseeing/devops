@@ -13,6 +13,15 @@ def cidr_netmask(value: str) -> str:
     return str(_network(value).netmask)
 
 
+def cidr_first_host(value: str) -> str:
+    """OpenVPN `server` mode assigns the first host address to itself."""
+    return str(next(_network(value).hosts()))
+
+
 class FilterModule:
     def filters(self) -> dict[str, object]:
-        return {"cidr_network": cidr_network, "cidr_netmask": cidr_netmask}
+        return {
+            "cidr_network": cidr_network,
+            "cidr_netmask": cidr_netmask,
+            "cidr_first_host": cidr_first_host,
+        }

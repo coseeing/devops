@@ -313,16 +313,31 @@ Windows App 的 PC 連線操作可對照 [Microsoft 官方說明](https://learn.
 
 ### 7.4 NVDA Remote 遠端協助
 
-同一個 playbook 會在 Linux 主機上以 Docker（固定 digest 的 [jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer) image、host network）執行 NVDA Remote relay server，systemd 服務名稱為 `nvda-remote-server`，port **6837**。它使用部署時在 `/var/lib/nvda-remote-server` 產生一次的自簽憑證，而不是公開 image 內附的私鑰；log 只記錄連線事件，不記錄 channel key。
+同一個 playbook 會在 Linux 主機上以 Docker（固定 digest 的 [jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer) image、host network）執行 NVDA Remote relay server，systemd 服務名稱為 `nvda-remote-server`，port **6837**。log 只記錄連線事件，不記錄 channel key。
 
 | 用戶端 | NVDA Remote 主機位址 | Port |
 | --- | --- | --- |
-| Mac（OpenVPN 已連線） | `vpn_cidr` 的第一個位址，例如 `10.250.0.1` | 6837 |
+| VPN 使用者本地的 Windows 電腦（OpenVPN 已連線） | `vpn_cidr` 的第一個位址，例如 `10.250.0.1` | 6837 |
 | Windows VM | Linux 主機的 **私有 IPv4**，例如 `10.0.1.10` | 6837 |
 
-兩端都選 **連線到控制伺服器（Connect to a control server）**，主機填上表對應的位址、port 6837，輸入相同的 key；一端控制、另一端被控制。第一次連線時 NVDA 會提示憑證不受信任，請管理員以
-`sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -fingerprint -sha256`
-核對指紋後再選擇信任。
+兩端都選 **連線到控制伺服器（Connect to a control server）**，主機填上表對應的位址、port 6837，輸入相同的 key；一端控制、另一端被控制。
+
+#### 憑證信任（不會跳警告的原因）
+
+NVDA 會先用 Windows 系統的信任憑證庫驗證伺服器憑證，驗證失敗才會跳出「憑證不受信任」的警告。因此部署時會在 Linux 主機的 `/etc/nvda-remote-server/ca` 建立一個私有 CA（只建立一次，私鑰不會離開主機），並簽發一張 IP SAN 剛好是上表兩個位址的伺服器憑證。這個 CA 加了 name constraints，只能簽私有 IPv4 位址，不能簽可用的網域名稱或公開 IP，所以信任它也無法被拿來攔截其他網站。`nvda-remote-cert-renew.timer` 每天檢查，在到期前 30 天或位址改變時自動重簽伺服器憑證；用戶端信任的 CA 不變。
+
+- **Windows VM：** workflow 會部署 `nvda-remote-ca-trust` CloudFormation stack，也就是一個 SSM State Manager association，把 CA 匯入所有 `VmPortalManaged=true` VM 的 `LocalMachine\Root`。目前關機中或之後才建立的 VM，只要 SSM agent 上線也會套用，並每天重跑一次。VM 上不會跳警告。
+- **VPN 使用者：** 匯入公開 CA 一次即可。從 workflow 執行結果的 summary（或在 Linux 上執行 `sudo cat /etc/nvda-remote-server/ca/ca.crt`）複製 PEM 內容存成 `nvda-remote-ca.crt`，先與 summary 裡的 SHA-256 指紋核對，再在 PowerShell 執行（不需要系統管理員權限，Windows 會跳出一次確認）：
+
+  ```powershell
+  Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
+  ```
+
+  沒有匯入 CA 的使用者則會看到 NVDA 的憑證警告，而且伺服器憑證每年更新後還會再跳一次。
+
+只有在 Linux 主機重建、`/etc/nvda-remote-server/ca` 遺失時 CA 才會改變；這時重新執行 workflow，並請 VPN 使用者重新匯入新的 CA。
+
+GitHub 部署角色需要能管理 `nvda-remote-ca-trust` stack 與其中的 `AWS::SSM::Association`（`ssm:CreateAssociation`、`ssm:UpdateAssociation`、`ssm:DeleteAssociation`、`ssm:DescribeAssociation`）。
 
 Linux 主機上的檢查指令：
 
@@ -330,6 +345,8 @@ Linux 主機上的檢查指令：
 systemctl status nvda-remote-server
 sudo journalctl -u nvda-remote-server -n 100
 sudo nft list chain inet openvpn_course_input input
+systemctl list-timers nvda-remote-cert-renew.timer
+sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -ext subjectAltName -enddate
 ```
 
 ## 8. 憑證更新與日常維運

@@ -7,3 +7,7 @@
     - openvpn_server
     - role: nvda_remote_server
       nvda_remote_port: "{{ openvpn_nvda_remote_port }}"
+      # VPN clients dial the tunnel address; Windows VMs dial the private IPv4.
+      nvda_remote_cert_ips:
+        - "{{ openvpn_vpn_cidr | cidr_first_host }}"
+        - "{{ ansible_default_ipv4.address }}"

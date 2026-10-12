@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Trust the course NVDA Remote private CA on managed Windows VMs
+
+Parameters:
+  CaCertificateDerBase64:
+    Type: String
+    Description: Public NVDA Remote CA certificate, DER encoded then base64 encoded
+    AllowedPattern: "^[A-Za-z0-9+/]+={0,2}$"
+    MinLength: 100
+    MaxLength: 4096
+
+Resources:
+  TrustNvdaRemoteCa:
+    Type: AWS::SSM::Association
+    Properties:
+      AssociationName: nvda-remote-ca-trust
+      Name: AWS-RunPowerShellScript
+      # State Manager also applies this to VMs that are stopped now or launched
+      # later as soon as their SSM agent checks in.
+      Targets:
+        - Key: tag:VmPortalManaged
+          Values: ["true"]
+      ScheduleExpression: rate(1 day)
+      Parameters:
+        commands:
+          - !Sub |
+            $ErrorActionPreference = 'Stop'
+            $subject = 'CN=Coseeing NVDA Remote CA'
+            $bytes = [Convert]::FromBase64String('${CaCertificateDerBase64}')
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (,$bytes)
+            if ($cert.Subject -ne $subject) { throw "Unexpected CA subject: $($cert.Subject)" }
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store 'Root', 'LocalMachine'
+            $store.Open('ReadWrite')
+            try {
+              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -eq $subject -and $_.Thumbprint -ne $cert.Thumbprint })) {
+                $store.Remove($old)
+                Write-Output "Removed previous NVDA Remote CA $($old.Thumbprint)"
+              }
+              if (-not ($store.Certificates | Where-Object { $_.Thumbprint -eq $cert.Thumbprint })) {
+                $store.Add($cert)
+                Write-Output "Trusted NVDA Remote CA $($cert.Thumbprint)"
+              } else {
+                Write-Output "NVDA Remote CA $($cert.Thumbprint) already trusted"
+              }
+            } finally {
+              $store.Close()
+            }
+
+Outputs:
+  AssociationId:
+    Value: !GetAtt TrustNvdaRemoteCa.AssociationId
