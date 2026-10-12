@@ -419,3 +419,14 @@ def test_deploy_workflow_bootstraps_aws_and_checks_health() -> None:
     verify = steps["Verify portal health"]["run"]
     assert "https://vms.coseeing.org/health/live" in verify
     assert "https://vms.coseeing.org/health/ready" in verify
+
+
+def test_portal_reads_only_the_nvda_remote_connection_secret() -> None:
+    template = (ROOT / "cloudformation/vms-portal-access-template.yml").read_text()
+    statement = template.split("Sid: ReadNvdaRemoteConnectionDetails", 1)[1].split("- Sid:", 1)[0]
+    assert "secretsmanager:GetSecretValue" in statement
+    assert "secretsmanager:PutSecretValue" not in statement
+    assert ":secret:prod/vms-portal/nvda-remote-??????" in statement
+
+    playbook = (ROOT / "ansible_yaml/vms-portal-playbook.yml").read_text()
+    assert "NVDA_REMOTE_SECRET_ID=prod/vms-portal/nvda-remote" in playbook

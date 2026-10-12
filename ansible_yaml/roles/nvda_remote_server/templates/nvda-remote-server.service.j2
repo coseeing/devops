@@ -1,0 +1,24 @@
+[Unit]
+Description=NVDA Remote relay server (Docker)
+Requires=docker.service
+After=docker.service network-online.target openvpn-course-firewall.service
+Wants=network-online.target
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm --force {{ nvda_remote_container_name }}
+ExecStart=/usr/bin/docker run --rm \
+  --name {{ nvda_remote_container_name }} \
+  --network host \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --ulimit nofile=65536:65536 \
+  --volume {{ nvda_remote_data_dir }}:/data:ro \
+  --log-driver journald \
+  {{ nvda_remote_image }}
+ExecStop=/usr/bin/docker stop --time 10 {{ nvda_remote_container_name }}
+
+[Install]
+WantedBy=multi-user.target

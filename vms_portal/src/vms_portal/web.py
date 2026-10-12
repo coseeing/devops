@@ -12,7 +12,7 @@ from typing import Any
 
 import boto3
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -21,6 +21,7 @@ from .audit import AuditEvent, AuditLogger
 from .config import Settings
 from .costs import CostService
 from .ec2 import Ec2Service, VmError
+from .nvda_remote import INSTALLER_FILENAME, NvdaRemoteSource
 from .secrets import SecretCache, SecretUnavailable
 from .sessions import (
     InvalidSession,
@@ -43,6 +44,7 @@ def create_app(
     cost_service: Any | None = None,
     assignment_repository: Any | None = None,
     audit_logger: AuditLogger | None = None,
+    nvda_remote_source: Any | None = None,
     clock: Callable[[], float] = time.time,
 ) -> FastAPI:
     if secret_cache is None:
@@ -64,6 +66,13 @@ def create_app(
     assignment_repository = assignment_repository or AssignmentRepository(
         settings.assignments_db_path
     )
+    if nvda_remote_source is None:
+        nvda_remote_source = NvdaRemoteSource(
+            boto3.client("secretsmanager", region_name=settings.aws_region)
+            if settings.nvda_remote_secret_id
+            else None,
+            settings.nvda_remote_secret_id,
+        )
     audit_logger = audit_logger or AuditLogger(
         logging.getLogger("vms_portal.audit").warning
     )
@@ -217,7 +226,14 @@ def create_app(
             return RedirectResponse("/login", status_code=303)
         if current.role == "user":
             return render(
-                request, "user.html", {"identity": current, "vm": None, "error": None}
+                request,
+                "user.html",
+                {
+                    "identity": current,
+                    "vm": None,
+                    "error": None,
+                    "nvda": nvda_remote_source.get(),
+                },
             )
         vms = ec2_service.list_managed()
         costs = cost_service.get_costs(vms, datetime.now(UTC))
@@ -230,6 +246,35 @@ def create_app(
                 "vms": vms,
                 "costs": costs,
                 "assignments": assignments,
+                "nvda": nvda_remote_source.get(),
+                "today": datetime.fromtimestamp(clock(), UTC).date(),
+            },
+        )
+
+    @app.get("/nvda-remote/" + INSTALLER_FILENAME)
+    def nvda_remote_installer(request: Request):
+        current = identity(request)
+        if current is None:
+            return RedirectResponse("/login", status_code=303)
+        info = nvda_remote_source.get()
+        if info is None:
+            return HTMLResponse("Not found", status_code=404)
+        audit_logger.emit(
+            AuditEvent(
+                "nvda_remote.ca_installer.downloaded",
+                "succeeded",
+                str(uuid.uuid4()),
+                current.username,
+                current.role,
+                request.client.host if request.client else "unknown",
+            )
+        )
+        return Response(
+            info.installer_cmd().encode("ascii"),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{INSTALLER_FILENAME}"',
+                "Cache-Control": "no-store",
             },
         )
 
@@ -271,7 +316,13 @@ def create_app(
         return render(
             request,
             "user.html",
-            {"identity": current, "vm": vm, "error": error, "costs": costs},
+            {
+                "identity": current,
+                "vm": vm,
+                "error": error,
+                "costs": costs,
+                "nvda": nvda_remote_source.get(),
+            },
         )
 
     @app.post("/instances/{instance_id}/assignment")

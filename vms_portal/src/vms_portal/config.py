@@ -41,6 +41,7 @@ class Settings:
     cost_table: str = "cur2"
     cost_workgroup: str = "vms-portal-costs"
     assignments_db_path: Path = Path("/data/vms-portal/data/portal.db")
+    nvda_remote_secret_id: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -71,4 +72,7 @@ class Settings:
                 env, "COST_WORKGROUP", "vms-portal-costs", r"[A-Za-z0-9._-]+"
             ),
             assignments_db_path=assignments_db_path,
+            nvda_remote_secret_id=_identifier(
+                env, "NVDA_REMOTE_SECRET_ID", "", r"[A-Za-z0-9/_+=.@-]*"
+            ),
         )

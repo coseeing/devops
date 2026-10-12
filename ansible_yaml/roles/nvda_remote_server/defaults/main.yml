@@ -1,0 +1,14 @@
+---
+nvda_remote_port: 6837
+nvda_remote_image: jmdaweb/nvda-remote-server:2.5@sha256:92641d3e65dd4132672e71bf891db266c08d2a5f6be4bf76a4ccc680ce88482b
+nvda_remote_container_name: nvda-remote-server
+nvda_remote_service_name: nvda-remote-server
+nvda_remote_data_dir: /var/lib/nvda-remote-server
+# The image runs as this fixed uid/gid; /data must be readable by it.
+nvda_remote_uid: 991
+nvda_remote_gid: 991
+# 1 logs connection events and client source addresses, never channel keys.
+nvda_remote_loglevel: 1
+nvda_remote_ca_dir: /etc/nvda-remote-server/ca
+# IPv4 addresses clients dial; each becomes an IP SAN on the server certificate.
+nvda_remote_cert_ips: []

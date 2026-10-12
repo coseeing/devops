@@ -43,6 +43,13 @@ def valid_args() -> tuple[str, ...]:
     )
 
 
+def test_cidr_first_host_is_the_openvpn_server_tunnel_address() -> None:
+    module = load_filters()
+    assert module.cidr_first_host("10.250.0.0/24") == "10.250.0.1"
+    assert module.cidr_first_host("10.250.0.77/24") == "10.250.0.1"
+    assert "cidr_first_host" in module.FilterModule().filters()
+
+
 def test_filters_return_canonical_network_and_netmask() -> None:
     module = load_filters()
     assert module.cidr_network("10.0.8.21/24") == "10.0.8.0"

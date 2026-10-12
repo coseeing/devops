@@ -27,9 +27,12 @@ that `FORWARD`-to-`DOCKER-USER` path is unavailable, the firewall preflight
 fails closed before the role enables IPv4 forwarding or starts OpenVPN.
 
 The course also owns `inet openvpn_course_input`, whose input base chain has a
-terminal drop for all `iifname "tun-course"` traffic. It prevents VPN clients
-from reaching Linux host services through the tunnel while safely coexisting
-with other host input policy: its drop verdict is terminal. The helper
+terminal drop for all `iifname "tun-course"` traffic except the NVDA Remote
+relay (TCP 6837). It prevents VPN clients from reaching any other Linux host
+service through the tunnel while safely coexisting with other host input
+policy: its drop verdict is terminal. The same chain accepts TCP 6837 only from
+the VPN client network, the Windows subnet, and loopback, and drops it from
+every other source, including the public interface. The helper
 atomically replaces only that table and `ip openvpn_course_nat` (and removes
 the legacy `inet openvpn_course` table if it is still present).
 
@@ -46,6 +49,9 @@ tries to connect:
 - Linux EC2 inbound: UDP 1194 from the intended client networks.
 - Windows inbound: TCP 3389 from the Linux host private IPv4 address as a
   `/32` source rule.
+- Linux EC2 inbound: TCP 6837 (NVDA Remote) from the Windows Security Group or
+  the Windows subnet CIDR. Never open TCP 6837 to `0.0.0.0/0`. VPN clients reach
+  the relay inside the tunnel and need no extra Security Group rule.
 - When VPN-only RDP is required, remove public RDP (TCP 3389) inbound rules
   from the Windows Security Group separately. The workflow never performs this
   removal and cannot prevent direct RDP to a Windows public address while such a
@@ -293,6 +299,118 @@ the PC name to the Windows **Private IPv4** from VMS Portal. Use the Windows
 credentials supplied by the course administrator and connect only after the
 OpenVPN client is connected. Do not save the `.ovpn` profile or Windows
 password in an unprotected shared location.
+
+## Connect with NVDA Remote
+
+The same playbook runs the NVDA Remote relay server
+([jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer), a
+digest-pinned Docker image) on the Linux host as the systemd unit
+`nvda-remote-server`, on TCP 6837 with host networking. It logs connection
+events without channel keys.
+
+| Client | NVDA Remote host | Port |
+| --- | --- | --- |
+| VPN user's own Windows PC (OpenVPN connected) | First address of `vpn_cidr`, e.g. `10.250.0.1` | 6837 |
+| Windows VM | Linux host **Private IPv4**, e.g. `10.0.1.10` | 6837 |
+
+Both sides choose **Connect to a control server**, enter the address for their
+side and port 6837, and type the same key; one side controls, the other is
+controlled.
+
+### Certificate trust
+
+NVDA verifies the relay certificate against the Windows trust store first and
+only shows an "untrusted certificate" prompt when that fails. The deployment
+therefore keeps a private CA on the Linux host in
+`/etc/nvda-remote-server/ca` (created once, private key never leaves the host)
+and issues a server certificate whose IP SANs are exactly the two addresses
+above. The CA is name-constrained to private IPv4 ranges and cannot sign usable
+DNS names or public IPs, so trusting it cannot be abused to intercept other
+sites. A daily `nvda-remote-cert-renew.timer` reissues the server certificate
+30 days before expiry, or when the addresses change; clients keep trusting the
+same CA.
+
+- **Windows VMs:** the workflow deploys the `nvda-remote-ca-trust`
+  CloudFormation stack, an SSM State Manager association that imports the CA
+  into `LocalMachine\Root` on every instance tagged `VmPortalManaged=true`.
+  It also applies to VMs that are stopped now or launched later once their SSM
+  agent checks in, and re-runs daily. No prompt appears on the VMs.
+- **VPN users:** sign in to VMS Portal, open the **NVDA Remote** section,
+  download `nvda-remote-ca-install.cmd`, and run it once on the PC they use with
+  OpenVPN. No administrator rights are needed; Windows asks once whether to
+  install the certificate. The section also lists both relay addresses and the
+  CA SHA-256 fingerprint. Downloads require a portal login and are audited.
+  Users who skip this see NVDA's certificate prompt instead, and again after
+  each yearly server certificate renewal.
+
+  Manual fallback: copy the PEM block from the workflow run summary into
+  `nvda-remote-ca.crt` and run
+  `Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`.
+
+The workflow stores the public CA certificate and both relay addresses in the
+Secrets Manager secret `prod/vms-portal/nvda-remote` (part of the
+`nvda-remote-ca-trust` stack). VMS Portal reads it with `NVDA_REMOTE_SECRET_ID`
+and hides the section until the secret exists, so redeploy VMS Portal once
+after this change to pick up the setting and its read permission.
+
+#### When the CA changes
+
+The CA is valid for 10 years and changes only in these cases:
+
+- **First deployment** creates it.
+- **The deploy workflow finds it within a year of expiry** and rotates it.
+  Only the workflow rotates the CA, because it also publishes the new CA to the
+  Windows VMs and VMS Portal in the same run. The daily renewal timer never
+  rotates it; it logs `NVDA Remote CA expires within a year; rerun the OpenVPN
+  deploy workflow to rotate it` to `journalctl -u nvda-remote-cert-renew`
+  instead. A yearly run is not required: any deploy during the CA's last year
+  rotates it. The VMS Portal admin page shows the CA expiry date and an alert
+  once that year starts (and when the CA has expired), so rerun the workflow
+  when the alert appears. The workflow run summary also lists the expiry date.
+- **`/etc/nvda-remote-server/ca` is lost**, for example when the Linux host is
+  rebuilt.
+- **An operator rotates it manually** (below).
+
+Rerunning the workflow, the yearly server certificate renewal, a changed
+private IPv4 or `vpn_cidr`, a new NVDA Remote image, a rebuilt Windows AMI, and
+a VMS Portal redeploy do not change the CA.
+
+After the CA changes, Windows VMs replace it automatically, VMS Portal shows
+the new fingerprint and installer within 5 minutes, and VPN users must run the
+new installer once (it removes the old course CA). Until they do, NVDA shows the
+certificate prompt.
+
+#### Rotate the CA manually
+
+Rotate it immediately if the CA private key may have been exposed:
+
+```bash
+sudo mv /etc/nvda-remote-server/ca "/etc/nvda-remote-server/ca.retired-$(date +%F)"
+```
+
+Then rerun the OpenVPN deploy workflow right away; it creates a new CA, issues
+a new server certificate, and publishes the CA. Ask every VPN user to download
+and run the installer from VMS Portal again. Delete the retired directory once
+the rotation is confirmed, because it still contains the old private key.
+
+The GitHub deployment role needs permission to manage the
+`nvda-remote-ca-trust` stack, its `AWS::SSM::Association`
+(`ssm:CreateAssociation`, `ssm:UpdateAssociation`, `ssm:DeleteAssociation`,
+`ssm:DescribeAssociation`), and its secret (`secretsmanager:CreateSecret`,
+`secretsmanager:UpdateSecret`, `secretsmanager:PutSecretValue`,
+`secretsmanager:DeleteSecret`, `secretsmanager:DescribeSecret`,
+`secretsmanager:TagResource` on `prod/vms-portal/nvda-remote-??????`), plus
+`ec2:DescribeInstances` to read the host private IPv4.
+
+Operator checks on the Linux host:
+
+```bash
+systemctl status nvda-remote-server
+sudo journalctl -u nvda-remote-server -n 100
+sudo nft list chain inet openvpn_course_input input
+systemctl list-timers nvda-remote-cert-renew.timer
+sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -ext subjectAltName -enddate
+```
 
 ## Verify Split Tunnel and Blocked Traffic
 

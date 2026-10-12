@@ -63,7 +63,7 @@ flowchart LR
     Mac -.->|取得目標私有 IP| Portal
 ```
 
-VPN 只推送 Windows subnet 路由；其他網際網路流量不經這台 VPN。防火牆阻擋經 tunnel 存取 Linux 本機服務、其他 VPN client，以及 Windows 的非 3389 轉送流量。Windows 看到的來源是 Linux 私有 IP，因此 Windows SG 應允許該 IP 的 `/32`，不是 `vpn_cidr`。回程藉由 NAT 狀態返回，不需為這個 VPN 位址池新增 VPC route table 路由。
+VPN 只推送 Windows subnet 路由；其他網際網路流量不經這台 VPN。防火牆阻擋經 tunnel 存取 Linux 本機服務（唯一例外是 NVDA Remote 的 TCP 6837）、其他 VPN client，以及 Windows 的非 3389 轉送流量。TCP 6837 只接受 VPN client 網段、Windows subnet 與 loopback，其他來源（包含公開網路）一律丟棄。Windows 看到的來源是 Linux 私有 IP，因此 Windows SG 應允許該 IP 的 `/32`，不是 `vpn_cidr`。回程藉由 NAT 狀態返回，不需為這個 VPN 位址池新增 VPC route table 路由。
 
 VMS Portal 提供主機查詢，不是 VPN 登入服務，也不在 RDP 資料路徑上。現有 Docker/Traefik 可與原生 OpenVPN 共存；部署依賴主機既有 `iptables-nft` 與 `FORWARD → DOCKER-USER` 路徑。
 
@@ -87,6 +87,7 @@ VMS Portal 提供主機查詢，不是 VPN 登入服務，也不在 RDP 資料�
 1. Linux SG：允許預定使用者來源的 **UDP 1194**。SSH 部署另需讓 GitHub runner 能連到 Linux 公開 IP 的 **TCP 22**。
 2. Windows SG：允許 **TCP 3389**，來源填 Linux 的 **私有 IPv4 `/32`**，例如 `10.0.1.10/32`。
 3. 若要求只能經 VPN 使用 RDP，另行移除 Windows SG 對公開網路開放的 3389 規則。workflow 不會代做。
+   - Linux SG：允許 **TCP 6837**（NVDA Remote），來源填 Windows SG 或 Windows subnet CIDR。**不要**對 `0.0.0.0/0` 開放。Mac 經 VPN tunnel 連線，不需另加 SG 規則。
 4. 確認 route table、Network ACL、Linux 與 Windows 防火牆允許必要流量；Linux 也需能下載套件並以 HTTPS 存取 S3。
 5. DNS 指向正確公開 IP。若使用會代理 HTTP 的 DNS 服務，VPN 名稱須走可直接到達主機的 DNS 解析；此服務是 UDP 1194。
 
@@ -333,6 +334,66 @@ chmod 600 "$HOME/.course-vpn/course-vpn.ovpn"
 4. 新增 PC，在 PC name 填 Windows 私有 IP，例如 `10.0.8.25`，輸入管理員交付的 Windows 帳號密碼後連線。這裡的密碼不是 Mac 密碼、Portal 密碼或 VPN 憑證。
 
 Windows App 的 PC 連線操作可對照 [Microsoft 官方說明](https://learn.microsoft.com/en-us/windows-app/get-started-connect-devices-desktops-apps)。
+
+### 7.4 NVDA Remote 遠端協助
+
+同一個 playbook 會在 Linux 主機上以 Docker（固定 digest 的 [jmdaweb/NVDARemoteServer](https://github.com/jmdaweb/NVDARemoteServer) image、host network）執行 NVDA Remote relay server，systemd 服務名稱為 `nvda-remote-server`，port **6837**。log 只記錄連線事件，不記錄 channel key。
+
+| 用戶端 | NVDA Remote 主機位址 | Port |
+| --- | --- | --- |
+| VPN 使用者本地的 Windows 電腦（OpenVPN 已連線） | `vpn_cidr` 的第一個位址，例如 `10.250.0.1` | 6837 |
+| Windows VM | Linux 主機的 **私有 IPv4**，例如 `10.0.1.10` | 6837 |
+
+兩端都選 **連線到控制伺服器（Connect to a control server）**，主機填上表對應的位址、port 6837，輸入相同的 key；一端控制、另一端被控制。
+
+#### 憑證信任（不會跳警告的原因）
+
+NVDA 會先用 Windows 系統的信任憑證庫驗證伺服器憑證，驗證失敗才會跳出「憑證不受信任」的警告。因此部署時會在 Linux 主機的 `/etc/nvda-remote-server/ca` 建立一個私有 CA（只建立一次，私鑰不會離開主機），並簽發一張 IP SAN 剛好是上表兩個位址的伺服器憑證。這個 CA 加了 name constraints，只能簽私有 IPv4 位址，不能簽可用的網域名稱或公開 IP，所以信任它也無法被拿來攔截其他網站。`nvda-remote-cert-renew.timer` 每天檢查，在到期前 30 天或位址改變時自動重簽伺服器憑證；用戶端信任的 CA 不變。
+
+- **Windows VM：** workflow 會部署 `nvda-remote-ca-trust` CloudFormation stack，也就是一個 SSM State Manager association，把 CA 匯入所有 `VmPortalManaged=true` VM 的 `LocalMachine\Root`。目前關機中或之後才建立的 VM，只要 SSM agent 上線也會套用，並每天重跑一次。VM 上不會跳警告。
+- **VPN 使用者：** 登入 VMS Portal，在「NVDA Remote 遠端協助」區塊下載 `nvda-remote-ca-install.cmd`，在連 OpenVPN 的那台電腦上點兩下執行一次即可。不需要系統管理員權限，Windows 會詢問一次是否安裝憑證，選「是」。這個區塊也會列出兩端的連線位址與 CA 的 SHA-256 指紋。下載需要登入 Portal，並會記錄在 audit log。
+
+  沒有執行安裝檔的使用者會看到 NVDA 的憑證警告，而且伺服器憑證每年更新後還會再跳一次。
+
+  手動備案：從 workflow summary 複製 PEM 存成 `nvda-remote-ca.crt`，再執行
+  `Import-Certificate -FilePath .\nvda-remote-ca.crt -CertStoreLocation Cert:\CurrentUser\Root`。
+
+workflow 會把公開的 CA 憑證和兩端位址存進 Secrets Manager 的 `prod/vms-portal/nvda-remote`（屬於 `nvda-remote-ca-trust` stack）。VMS Portal 透過 `NVDA_REMOTE_SECRET_ID` 讀取，secret 還不存在時會自動隱藏這個區塊。這次變更後需要重新部署 VMS Portal 一次，讓它取得新的設定與讀取權限。
+
+#### CA 什麼時候會改變
+
+CA 有效期 10 年，只有以下情況會改變：
+
+- **第一次部署**：建立 CA。
+- **部署 workflow 發現 CA 剩不到一年就到期**：自動換新。只有 workflow 會換 CA，因為它會在同一次執行中把新 CA 發佈到 Windows VM 和 VMS Portal。每日續期的 timer 不會換 CA，只會在 `journalctl -u nvda-remote-cert-renew` 留下警告 `NVDA Remote CA expires within a year; rerun the OpenVPN deploy workflow to rotate it`。不需要每年執行：只要在 CA 到期前最後一年內跑過任一次部署，就會換新。VMS Portal 的 admin 頁面會顯示 CA 到期日，進入最後一年（或已過期）時會出現警告，看到警告時重跑部署 workflow 即可。workflow summary 也會列出到期日。
+- **`/etc/nvda-remote-server/ca` 遺失**：例如 Linux 主機重建。
+- **管理員手動更換**（見下方）。
+
+重跑 workflow、伺服器憑證每年續期、私有 IPv4 或 `vpn_cidr` 改變、更新 NVDA Remote image、重建 Windows AMI、重新部署 VMS Portal，都**不會**改變 CA。
+
+CA 改變後，Windows VM 會自動更新，VMS Portal 最多 5 分鐘後會顯示新的指紋與安裝檔；VPN 使用者需要重新執行一次新的安裝檔（會自動移除舊的課程 CA），在那之前 NVDA 會跳出憑證警告。
+
+#### 手動更換 CA
+
+如果懷疑 CA 私鑰可能外洩，請立即更換：
+
+```bash
+sudo mv /etc/nvda-remote-server/ca "/etc/nvda-remote-server/ca.retired-$(date +%F)"
+```
+
+接著馬上重跑 OpenVPN 部署 workflow：它會建立新 CA、簽發新的伺服器憑證，並發佈新 CA。請所有 VPN 使用者從 VMS Portal 重新下載並執行安裝檔。確認更換完成後，刪除 retired 目錄，因為裡面還留著舊的私鑰。
+
+GitHub 部署角色需要能管理 `nvda-remote-ca-trust` stack、其中的 `AWS::SSM::Association`（`ssm:CreateAssociation`、`ssm:UpdateAssociation`、`ssm:DeleteAssociation`、`ssm:DescribeAssociation`）與 secret（`prod/vms-portal/nvda-remote-??????` 的 `secretsmanager:CreateSecret`、`UpdateSecret`、`PutSecretValue`、`DeleteSecret`、`DescribeSecret`、`TagResource`），以及用 `ec2:DescribeInstances` 讀取主機私有 IPv4。
+
+Linux 主機上的檢查指令：
+
+```bash
+systemctl status nvda-remote-server
+sudo journalctl -u nvda-remote-server -n 100
+sudo nft list chain inet openvpn_course_input input
+systemctl list-timers nvda-remote-cert-renew.timer
+sudo openssl x509 -in /var/lib/nvda-remote-server/server.crt -noout -ext subjectAltName -enddate
+```
 
 ## 8. 憑證更新與日常維運
 

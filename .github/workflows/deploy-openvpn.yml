@@ -43,11 +43,11 @@ jobs:
         working-directory: vms_portal
       - run: uv run pytest ../tests/openvpn -q
         working-directory: vms_portal
-      - run: uvx cfn-lint cloudformation/openvpn-distribution-template.yml
+      - run: uvx cfn-lint cloudformation/openvpn-distribution-template.yml cloudformation/nvda-remote-ca-trust-template.yml
       - name: Validate OpenVPN shell scripts
         run: |
           set -euo pipefail
-          for script in scripts/openvpn-course scripts/openvpn-course-firewall; do
+          for script in scripts/openvpn-course scripts/openvpn-course-firewall scripts/nvda-remote-cert; do
             bash -n "$script"
           done
       - run: python3 -m py_compile scripts/validate-openvpn-inputs.py ansible_yaml/filter_plugins/openvpn_filters.py
@@ -80,6 +80,7 @@ jobs:
     env:
       AWS_REGION: ap-northeast-1
       DISTRIBUTION_STACK_NAME: openvpn-course-profile-distribution
+      NVDA_CA_TRUST_STACK_NAME: nvda-remote-ca-trust
       RUNTIME_ROLE_NAME: coseeing-ec2-common
     steps:
       - uses: actions/checkout@v4
@@ -112,6 +113,11 @@ jobs:
           INSTANCE_ID=$(jq -r '.[] | select(.OutputKey == "InstanceId") | .OutputValue' <<<"$STACK_OUTPUTS")
           [[ "$HOST_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
           [[ "$INSTANCE_ID" =~ ^i-[a-f0-9]{8,17}$ ]]
+          PRIVATE_IP=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text)
+          [[ "$PRIVATE_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
 
           SUBNET_JSON=$(aws ec2 describe-subnets \
             --subnet-ids "$WINDOWS_SUBNET_ID" \
@@ -139,10 +145,14 @@ jobs:
           WINDOWS_CIDR=$(jq -r .windows_cidr <<<"$NORMALIZED")
           VPC_CIDR=$(jq -r .vpc_cidr <<<"$NORMALIZED")
           CLIENT_DAYS=$(jq -r .client_days <<<"$NORMALIZED")
+          # OpenVPN server mode takes the first host address of the VPN network.
+          VPN_SERVER_IP=$(python3 -c 'import ipaddress, sys; print(next(ipaddress.ip_network(sys.argv[1]).hosts()))' "$VPN_CIDR")
 
           {
             echo "host_ip=$HOST_IP"
             echo "instance_id=$INSTANCE_ID"
+            echo "private_ip=$PRIVATE_IP"
+            echo "vpn_server_ip=$VPN_SERVER_IP"
             echo "endpoint=$ENDPOINT"
             echo "vpn_cidr=$VPN_CIDR"
             echo "windows_cidr=$WINDOWS_CIDR"
@@ -248,9 +258,65 @@ jobs:
           iptables -w 5 -t filter -S "$active_course_chain" >/dev/null
           nft list table inet openvpn_course_input >/dev/null
           nft list table ip openvpn_course_nat >/dev/null
+          nft list chain inet openvpn_course_input input | grep -Fq 'tcp dport 6837 drop'
+          systemctl is-active --quiet nvda-remote-server
+          systemctl is-enabled --quiet nvda-remote-server
+          systemctl is-enabled --quiet nvda-remote-cert-renew.timer
+          openssl verify -CAfile /etc/nvda-remote-server/ca/ca.crt /var/lib/nvda-remote-server/server.crt >/dev/null
+          openssl x509 -in /etc/nvda-remote-server/ca/ca.crt -noout -checkend 31536000 >/dev/null
+          ss -ltn | grep -Eq "[:.]6837[[:space:]]"
           REMOTE_CHECKS
+      - name: Read NVDA Remote CA certificate
+        id: nvda_ca
+        env:
+          HOST_IP: ${{ steps.discover.outputs.host_ip }}
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/openvpn-known-hosts
+          SSH_KEY_PATH: ${{ runner.temp }}/openvpn-ec2-key
+        run: |
+          set -euo pipefail
+
+          # Public certificate only; the CA private key never leaves the host.
+          CA_PEM=$(ssh -i "$SSH_KEY_PATH" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
+            "ubuntu@$HOST_IP" \
+            'sudo cat /etc/nvda-remote-server/ca/ca.crt')
+          CA_DER_BASE64=$(openssl x509 -outform DER <<<"$CA_PEM" | base64 -w0)
+          CA_SUBJECT=$(openssl x509 -noout -subject -nameopt RFC2253 <<<"$CA_PEM")
+          [[ "$CA_SUBJECT" == "subject=CN=Coseeing NVDA Remote CA" ]]
+          CA_FINGERPRINT=$(openssl x509 -noout -fingerprint -sha256 <<<"$CA_PEM" | cut -d= -f2)
+          CA_EXPIRES_AT=$(date -u -d "$(openssl x509 -noout -enddate <<<"$CA_PEM" | cut -d= -f2)" +%F)
+          {
+            echo "der_base64=$CA_DER_BASE64"
+            echo "fingerprint=$CA_FINGERPRINT"
+            echo "expires_at=$CA_EXPIRES_AT"
+            echo "pem<<NVDA_CA_PEM"
+            printf '%s\n' "$CA_PEM"
+            echo "NVDA_CA_PEM"
+          } >> "$GITHUB_OUTPUT"
+      - name: Trust NVDA Remote CA on managed Windows VMs
+        env:
+          CA_DER_BASE64: ${{ steps.nvda_ca.outputs.der_base64 }}
+          CA_EXPIRES_AT: ${{ steps.nvda_ca.outputs.expires_at }}
+          PRIVATE_IP: ${{ steps.discover.outputs.private_ip }}
+          VPN_SERVER_IP: ${{ steps.discover.outputs.vpn_server_ip }}
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "$NVDA_CA_TRUST_STACK_NAME" \
+            --template-file cloudformation/nvda-remote-ca-trust-template.yml \
+            --parameter-overrides \
+              CaCertificateDerBase64="$CA_DER_BASE64" \
+              CaExpiresAt="$CA_EXPIRES_AT" \
+              VpnHost="$VPN_SERVER_IP" \
+              VmHost="$PRIVATE_IP" \
+            --no-fail-on-empty-changeset
       - name: Deployment summary
         env:
+          NVDA_CA_EXPIRES_AT: ${{ steps.nvda_ca.outputs.expires_at }}
+          NVDA_CA_FINGERPRINT: ${{ steps.nvda_ca.outputs.fingerprint }}
+          NVDA_CA_PEM: ${{ steps.nvda_ca.outputs.pem }}
           PROFILE_BUCKET: ${{ steps.distribution.outputs.profile_bucket }}
         run: |
           set -euo pipefail
@@ -262,6 +328,17 @@ jobs:
             echo "- Profile bucket: \`$PROFILE_BUCKET\`"
             echo "- Deployment: \`passed\`"
             echo "- Remote checks: \`passed\`"
+            echo "- NVDA Remote server: \`TCP 6837\`"
+            echo "- NVDA Remote CA trust stack: \`$NVDA_CA_TRUST_STACK_NAME\`"
+            echo "- NVDA Remote CA SHA-256: \`$NVDA_CA_FINGERPRINT\`"
+            echo "- NVDA Remote CA expires: \`$NVDA_CA_EXPIRES_AT\`"
+            echo
+            echo 'VPN users download the one-click CA installer from VMS Portal.'
+            echo 'Manual fallback: save the public CA below as `nvda-remote-ca.crt`:'
+            echo
+            echo '```'
+            printf '%s\n' "$NVDA_CA_PEM"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove EC2 SSH credentials
         if: always()

@@ -20,3 +20,5 @@ openvpn_aws_cli_signer_fingerprint: FB5DB77FD5C118B80511ADA8A6310ACC4672475C
 openvpn_verify_s3: false
 openvpn_server_cn: course-server
 openvpn_initial_client_cn: course-shared
+# NVDA Remote relay on this host: reachable from VPN clients and the Windows subnet only.
+openvpn_nvda_remote_port: 6837

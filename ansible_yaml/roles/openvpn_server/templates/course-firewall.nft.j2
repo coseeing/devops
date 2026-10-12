@@ -1,7 +1,11 @@
 table inet openvpn_course_input {
   chain input {
     type filter hook input priority filter; policy accept;
+    iifname "tun-course" ip saddr {{ openvpn_vpn_cidr }} tcp dport {{ openvpn_nvda_remote_port }} accept
     iifname "tun-course" drop
+    iifname "lo" tcp dport {{ openvpn_nvda_remote_port }} accept
+    ip saddr {{ openvpn_windows_cidr }} tcp dport {{ openvpn_nvda_remote_port }} accept
+    tcp dport {{ openvpn_nvda_remote_port }} drop
   }
 }
 

@@ -110,6 +110,45 @@ def test_workflow_remote_check_verifies_active_docker_course_firewall_path() -> 
     assert "nft list table ip openvpn_course_nat" in remote_run
 
 
+def test_workflow_remote_check_verifies_nvda_remote_server() -> None:
+    workflow = load_workflow()
+    remote_run = next(
+        step["run"]
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Verify remote OpenVPN service state"
+    )
+
+    assert "systemctl is-active --quiet nvda-remote-server" in remote_run
+    assert "systemctl is-enabled --quiet nvda-remote-server" in remote_run
+    assert 'ss -ltn | grep -Eq "[:.]6837[[:space:]]"' in remote_run
+    assert "tcp dport 6837 drop" in remote_run
+    assert "systemctl is-enabled --quiet nvda-remote-cert-renew.timer" in remote_run
+    assert "openssl verify -CAfile /etc/nvda-remote-server/ca/ca.crt" in remote_run
+
+
+def test_workflow_distributes_only_the_public_nvda_ca_to_windows() -> None:
+    workflow = load_workflow()
+    steps = workflow["jobs"]["deploy"]["steps"]
+    names = [step.get("name") for step in steps]
+    read_ca = steps[names.index("Read NVDA Remote CA certificate")]["run"]
+    trust = steps[names.index("Trust NVDA Remote CA on managed Windows VMs")]["run"]
+
+    assert names.index("Deploy OpenVPN with Ansible") < names.index(
+        "Read NVDA Remote CA certificate"
+    ) < names.index("Trust NVDA Remote CA on managed Windows VMs")
+    assert "sudo cat /etc/nvda-remote-server/ca/ca.crt" in read_ca
+    assert "ca.key" not in read_ca
+    assert 'subject=CN=Coseeing NVDA Remote CA' in read_ca
+    assert "cloudformation/nvda-remote-ca-trust-template.yml" in trust
+    assert 'CaCertificateDerBase64="$CA_DER_BASE64"' in trust
+
+    validate_runs = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["validate"]["steps"]
+    )
+    assert "cloudformation/nvda-remote-ca-trust-template.yml" in validate_runs
+    assert "scripts/nvda-remote-cert" in validate_runs
+
+
 def test_deploy_preserves_current_profile_without_publishing_a_share() -> None:
     workflow = load_workflow()
     deploy = workflow["jobs"]["deploy"]
