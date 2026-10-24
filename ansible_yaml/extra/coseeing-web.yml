@@ -24,7 +24,7 @@ http:
     joinus302:
       redirectregex:
         regex: ^.*$
-        replacement: https://docs.google.com/forms/d/e/1FAIpQLSepEFlPj1Lnkc1chqJCdj-7EgQGhPEJAajylBU1gyJgWA4ovw/viewform
+        replacement: https://docs.google.com/forms/d/e/1FAIpQLSfSAH2iDq_nrk8Ue1bssn4eFRb_8wSuhzrCWT_4iHyxGx7hgA/viewform
     welcome302:
       redirectregex:
         regex: ^.*$
