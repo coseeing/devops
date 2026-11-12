@@ -1,0 +1,8 @@
+http:
+  routers:
+    hydra:
+      rule: Host(`(`host`)`) && (PathPrefix(`/oauth2`) || PathPrefix(`/.well-known`) || PathPrefix(`/userinfo`))
+      entrypoints: websecure
+      priority: 20
+      tls:
+        certresolver: (`certresolver`)

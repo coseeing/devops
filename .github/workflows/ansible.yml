@@ -24,6 +24,7 @@ on:
           - a11yvillage-server
           - coseeing-web
           - coseeing-server
+          - sso
 
 jobs:
   deploy:
