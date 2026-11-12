@@ -14,6 +14,10 @@ targets:
     url: https://coseeing.org
   - name: Coseeing Backend API
     url: https://api.coseeing.org/about/api/
+  - name: SSO Kratos
+    url: https://sso.coseeing.org/kratos/health/ready
+  - name: SSO Hydra
+    url: https://sso.coseeing.org/.well-known/openid-configuration
   - name: Twvip Frontend
     url: https://www.twvip.org/
   - name: Twvip Backend API
