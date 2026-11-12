@@ -30,5 +30,13 @@
     "dev": {
       "domain": "api.dev.coseeing.org"
     }
+  },
+  "sso": {
+    "prod": {
+      "domain": "sso.coseeing.org"
+    },
+    "dev": {
+      "domain": "sso.dev.coseeing.org"
+    }
   }
 }

@@ -1,0 +1,14 @@
+http:
+  routers:
+    kratos:
+      rule: Host(`(`host`)`) && PathPrefix(`/kratos`)
+      entrypoints: websecure
+      priority: 20
+      middlewares: strip-kratos
+      tls:
+        certresolver: (`certresolver`)
+  middlewares:
+    strip-kratos:
+      stripPrefix:
+        prefixes:
+          - /kratos

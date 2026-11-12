@@ -1,0 +1,248 @@
+- name: Deploy SSO
+  hosts: all
+  become: true
+  become_user: root
+  vars_files:
+    - common/vars.yml
+  vars:
+    docker_compose_dir: "/data/sso{{ project_postfix }}"
+    secret_name: "{{ 'dev' if project_postfix == '-dev' else 'prod' }}/sso"
+    traefik_certresolver: "sso{{ project_postfix }}"
+    traefik_router_prefix: "sso-service{{ project_postfix }}--"
+    project_name: sso
+    image_name: "{{ ecr_location }}/sso-center:{{ deploy_tag }}"
+    sso_other_images:
+      - sso-kratos
+      - sso-hydra
+      - sso-kratos-schemas
+  collections:
+    - community.docker
+    - community.aws
+  tasks:
+    - name: Check existing Traefik configuration
+      stat:
+        path: "{{ traefik_path }}/traefik.yml"
+      register: sso_traefik_config
+
+    - name: Require existing Traefik configuration
+      assert:
+        that:
+          - sso_traefik_config.stat.exists
+        fail_msg: "主機上沒有 Traefik（{{ traefik_path }}），SSO 需要既有的 Traefik 與 entry 網路"
+
+    - name: Include common preparation tasks
+      include_tasks: common/pre-common.yml
+
+    - name: Load Hydra Traefik configuration
+      set_fact:
+        sso_traefik_hydra: "{{ lookup('file', playbook_dir + '/extra/sso-hydra.yml') | from_yaml }}"
+
+    - name: Transform Hydra Traefik configuration
+      set_fact:
+        traefik_labels_hydra: "{{ (sso_traefik_hydra | replace_placeholders(domain, traefik_certresolver) | apply_prefix(traefik_router_prefix)) | flatten_to_labels }}"
+
+    - name: Load Kratos Traefik configuration
+      set_fact:
+        sso_traefik_kratos: "{{ lookup('file', playbook_dir + '/extra/sso-kratos.yml') | from_yaml }}"
+
+    - name: Transform Kratos Traefik configuration
+      set_fact:
+        traefik_labels_kratos: "{{ (sso_traefik_kratos | replace_placeholders(domain, traefik_certresolver) | apply_prefix(traefik_router_prefix)) | flatten_to_labels }}"
+
+    - name: Load Kratos schemas Traefik configuration
+      set_fact:
+        sso_traefik_kratos_schemas: "{{ lookup('file', playbook_dir + '/extra/sso-kratos-schemas.yml') | from_yaml }}"
+
+    - name: Transform Kratos schemas Traefik configuration
+      set_fact:
+        traefik_labels_kratos_schemas: "{{ (sso_traefik_kratos_schemas | replace_placeholders(domain, traefik_certresolver) | apply_prefix(traefik_router_prefix)) | flatten_to_labels }}"
+
+    - name: Read SSO secret from AWS Secrets Manager
+      set_fact:
+        secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
+      no_log: true
+
+    - name: Write SSO environment file
+      copy:
+        dest: "{{ docker_compose_dir }}/.env"
+        mode: "0600"
+        content: |
+          SSO_PUBLIC_HOST={{ deploy_domain }}
+          SSO_PUBLIC_ORIGIN=https://{{ deploy_domain }}
+          LOG_LEVEL=info
+          IMAGE_TAG={{ deploy_tag }}
+          POSTFIX={{ project_postfix }}
+          HYDRA_DSN={{ secret_data.HYDRA_DSN }}
+          KRATOS_DSN={{ secret_data.KRATOS_DSN }}
+          HYDRA_SYSTEM_SECRET={{ secret_data.HYDRA_SYSTEM_SECRET }}
+          {% if 'HYDRA_SYSTEM_SECRET_OLD' in secret_data %}
+          HYDRA_SYSTEM_SECRET_OLD={{ secret_data.HYDRA_SYSTEM_SECRET_OLD }}
+          {% endif %}
+          KRATOS_COOKIE_SECRET={{ secret_data.KRATOS_COOKIE_SECRET }}
+          {% if 'KRATOS_COOKIE_SECRET_OLD' in secret_data %}
+          KRATOS_COOKIE_SECRET_OLD={{ secret_data.KRATOS_COOKIE_SECRET_OLD }}
+          {% endif %}
+          KRATOS_CIPHER_SECRET={{ secret_data.KRATOS_CIPHER_SECRET }}
+          {% if 'KRATOS_CIPHER_SECRET_OLD' in secret_data %}
+          KRATOS_CIPHER_SECRET_OLD={{ secret_data.KRATOS_CIPHER_SECRET_OLD }}
+          {% endif %}
+          KRATOS_GOOGLE_CLIENT_ID={{ secret_data.KRATOS_GOOGLE_CLIENT_ID }}
+          KRATOS_GOOGLE_CLIENT_SECRET={{ secret_data.KRATOS_GOOGLE_CLIENT_SECRET }}
+          KRATOS_GMAIL_ADDRESS={{ secret_data.KRATOS_GMAIL_ADDRESS }}
+          KRATOS_GMAIL_APP_PASSWORD={{ secret_data.KRATOS_GMAIL_APP_PASSWORD }}
+          CENTER_COOKIE_SECRET={{ secret_data.CENTER_COOKIE_SECRET }}
+          CENTER_CSRF_COOKIE_SECRET={{ secret_data.CENTER_CSRF_COOKIE_SECRET }}
+          TRUSTED_CONSENT_CLIENT_IDS={{ secret_data.TRUSTED_CONSENT_CLIENT_IDS }}
+      no_log: true
+
+    - name: Write SSO Compose file
+      copy:
+        dest: "{{ docker_compose_dir }}/docker-compose.yml"
+        mode: "0644"
+        content: |
+          services:
+            hydra-migrate:
+              container_name: sso-hydra-migrate{{ project_postfix }}
+              image: {{ ecr_location }}/sso-hydra:{{ deploy_tag }}
+              environment:
+                DSN: ${HYDRA_DSN}
+              command: ["migrate", "sql", "up", "-e", "--yes"]
+              networks:
+                - sso{{ project_postfix }}
+              restart: on-failure
+
+            hydra:
+              container_name: sso-hydra{{ project_postfix }}
+              image: {{ ecr_location }}/sso-hydra:{{ deploy_tag }}
+              depends_on:
+                hydra-migrate:
+                  condition: service_completed_successfully
+              environment:
+                DSN: ${HYDRA_DSN}
+                SECRETS_SYSTEM_0: ${HYDRA_SYSTEM_SECRET}
+          {% if 'HYDRA_SYSTEM_SECRET_OLD' in secret_data %}
+                SECRETS_SYSTEM_1: ${HYDRA_SYSTEM_SECRET_OLD}
+          {% endif %}
+                SERVE_PUBLIC_CORS_ENABLED: "true"
+                SERVE_PUBLIC_CORS_ALLOWED_ORIGINS: https://admin-a11yvillage.coseeing.org,https://admin-a11yvillage-dev.coseeing.org,http://localhost:8000,http://127.0.0.1:8000
+                SERVE_PUBLIC_CORS_ALLOWED_METHODS: GET,POST,PUT,PATCH,DELETE,OPTIONS
+                SERVE_PUBLIC_CORS_ALLOWED_HEADERS: Authorization,Content-Type
+                SERVE_PUBLIC_CORS_EXPOSED_HEADERS: Content-Type
+                URLS_SELF_ISSUER: ${SSO_PUBLIC_ORIGIN}
+                URLS_LOGIN: ${SSO_PUBLIC_ORIGIN}/center/auth/login
+                URLS_CONSENT: ${SSO_PUBLIC_ORIGIN}/center/consent
+                URLS_LOGOUT: ${SSO_PUBLIC_ORIGIN}/center/logout
+                URLS_ERROR: ${SSO_PUBLIC_ORIGIN}/center/error
+              command: ["serve", "-c", "/etc/config/hydra/hydra.yml", "all"]
+              networks:
+                - sso{{ project_postfix }}
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'hydra.loadbalancer.server.port=4444'] + traefik_labels_hydra) | to_json }}
+              mem_limit: 256M
+              restart: unless-stopped
+
+            kratos-migrate:
+              container_name: sso-kratos-migrate{{ project_postfix }}
+              image: {{ ecr_location }}/sso-kratos:{{ deploy_tag }}
+              environment:
+                DSN: ${KRATOS_DSN}
+              command: ["-c", "/etc/config/kratos/kratos.yml", "migrate", "sql", "up", "-e", "--yes"]
+              networks:
+                - sso{{ project_postfix }}
+              restart: on-failure
+
+            kratos:
+              container_name: sso-kratos{{ project_postfix }}
+              image: {{ ecr_location }}/sso-kratos:{{ deploy_tag }}
+              depends_on:
+                kratos-migrate:
+                  condition: service_completed_successfully
+              environment:
+                DSN: ${KRATOS_DSN}
+                LOG_LEVEL: ${LOG_LEVEL}
+                SECRETS_COOKIE_0: ${KRATOS_COOKIE_SECRET}
+          {% if 'KRATOS_COOKIE_SECRET_OLD' in secret_data %}
+                SECRETS_COOKIE_1: ${KRATOS_COOKIE_SECRET_OLD}
+          {% endif %}
+                SECRETS_CIPHER_0: ${KRATOS_CIPHER_SECRET}
+          {% if 'KRATOS_CIPHER_SECRET_OLD' in secret_data %}
+                SECRETS_CIPHER_1: ${KRATOS_CIPHER_SECRET_OLD}
+          {% endif %}
+                SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS_0_CLIENT_ID: ${KRATOS_GOOGLE_CLIENT_ID}
+                SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS_0_CLIENT_SECRET: ${KRATOS_GOOGLE_CLIENT_SECRET}
+                COURIER_SMTP_CONNECTION_URI: smtp://${KRATOS_GMAIL_ADDRESS}:${KRATOS_GMAIL_APP_PASSWORD}@smtp.gmail.com:587/?starttls=true
+                COURIER_SMTP_FROM_ADDRESS: ${KRATOS_GMAIL_ADDRESS}
+                COURIER_SMTP_FROM_NAME: SSO
+                COOKIES_DOMAIN: ${SSO_PUBLIC_HOST}
+                SESSION_COOKIE_DOMAIN: ${SSO_PUBLIC_HOST}
+                SERVE_PUBLIC_BASE_URL: ${SSO_PUBLIC_ORIGIN}/kratos/
+                SERVE_PUBLIC_CORS_ALLOWED_ORIGINS_0: ${SSO_PUBLIC_ORIGIN}
+                SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome
+                SELFSERVICE_ALLOWED_RETURN_URLS_0: ${SSO_PUBLIC_ORIGIN}/center
+                SELFSERVICE_ALLOWED_RETURN_URLS_1: ${SSO_PUBLIC_ORIGIN}/center/welcome
+                SELFSERVICE_FLOWS_ERROR_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/error
+                SELFSERVICE_FLOWS_SETTINGS_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/settings
+                SELFSERVICE_FLOWS_RECOVERY_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/auth/recovery
+                SELFSERVICE_FLOWS_VERIFICATION_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/auth/verification
+                SELFSERVICE_FLOWS_VERIFICATION_AFTER_DEFAULT_BROWSER_RETURN_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome
+                SELFSERVICE_FLOWS_LOGOUT_AFTER_DEFAULT_BROWSER_RETURN_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome#signed_out
+                SELFSERVICE_FLOWS_LOGIN_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome
+                SELFSERVICE_FLOWS_REGISTRATION_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/auth/registration
+                OAUTH2_PROVIDER_URL: http://sso-hydra{{ project_postfix }}:4445
+                SERVE_ADMIN_BASE_URL: http://sso-kratos{{ project_postfix }}:4434/
+              command: ["serve", "-c", "/etc/config/kratos/kratos.yml", "--watch-courier"]
+              networks:
+                - sso{{ project_postfix }}
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'kratos.loadbalancer.server.port=4433'] + traefik_labels_kratos) | to_json }}
+              mem_limit: 256M
+              restart: unless-stopped
+
+            kratos-schemas:
+              container_name: sso-kratos-schemas{{ project_postfix }}
+              image: {{ ecr_location }}/sso-kratos-schemas:{{ deploy_tag }}
+              networks:
+                - sso{{ project_postfix }}
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'kratos-schemas.loadbalancer.server.port=80'] + traefik_labels_kratos_schemas) | to_json }}
+              mem_limit: 32M
+              restart: unless-stopped
+
+            center:
+              container_name: sso-center{{ project_postfix }}
+              image: {{ image_name }}
+              depends_on:
+                - kratos
+                - hydra
+              environment:
+                NODE_ENV: production
+                PORT: "3000"
+                NEXT_PUBLIC_ORY_SDK_URL: http://sso-kratos{{ project_postfix }}:4433
+                KRATOS_ADMIN_URL: http://sso-kratos{{ project_postfix }}:4434
+                HYDRA_ADMIN_URL: http://sso-hydra{{ project_postfix }}:4445
+                REMEMBER_CONSENT_SESSION_FOR_SECONDS: "3600"
+                TRUSTED_CONSENT_CLIENT_IDS: ${TRUSTED_CONSENT_CLIENT_IDS:-}
+              networks:
+                - sso{{ project_postfix }}
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'center.loadbalancer.server.port=3000'] + traefik_labels_list) | to_json }}
+              mem_limit: 384M
+              restart: unless-stopped
+
+          networks:
+            sso{{ project_postfix }}:
+              driver: bridge
+              name: sso{{ project_postfix }}
+            entry:
+              driver: bridge
+              name: entry
+
+    - name: Untag other SSO images before deployment
+      community.docker.docker_image:
+        name: "{{ ecr_location }}/{{ item }}:{{ deploy_tag }}"
+        state: absent
+        force_absent: true
+      loop: "{{ sso_other_images }}"
+
+    - name: Include common deployment tasks
+      include_tasks: common/post-common.yml
