@@ -1,0 +1,8 @@
+http:
+  routers:
+    center:
+      rule: Host(`(`host`)`) && PathPrefix(`/center`)
+      entrypoints: websecure
+      priority: 30
+      tls:
+        certresolver: (`certresolver`)

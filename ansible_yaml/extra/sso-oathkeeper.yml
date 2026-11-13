@@ -1,0 +1,14 @@
+http:
+  routers:
+    hydra-admin:
+      rule: Host(`(`host`)`) && PathPrefix(`/hydra/admin`)
+      entrypoints: websecure
+      priority: 100
+      tls:
+        certresolver: (`certresolver`)
+    kratos-admin:
+      rule: Host(`(`host`)`) && PathPrefix(`/kratos/admin`)
+      entrypoints: websecure
+      priority: 100
+      tls:
+        certresolver: (`certresolver`)
