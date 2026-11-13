@@ -15,6 +15,7 @@
       - sso-kratos
       - sso-hydra
       - sso-kratos-schemas
+      - sso-oathkeeper
   collections:
     - community.docker
     - community.aws
@@ -57,6 +58,14 @@
       set_fact:
         traefik_labels_kratos_schemas: "{{ (sso_traefik_kratos_schemas | replace_placeholders(domain, traefik_certresolver) | apply_prefix(traefik_router_prefix)) | flatten_to_labels }}"
 
+    - name: Load Oathkeeper Traefik configuration
+      set_fact:
+        sso_traefik_oathkeeper: "{{ lookup('file', playbook_dir + '/extra/sso-oathkeeper.yml') | from_yaml }}"
+
+    - name: Transform Oathkeeper Traefik configuration
+      set_fact:
+        traefik_labels_oathkeeper: "{{ (sso_traefik_oathkeeper | replace_placeholders(domain, traefik_certresolver) | apply_prefix(traefik_router_prefix)) | flatten_to_labels }}"
+
     - name: Read SSO secret from AWS Secrets Manager
       set_fact:
         secret_data: "{{ lookup('amazon.aws.aws_secret', secret_name, region=secret_region) | from_json }}"
@@ -90,8 +99,7 @@
           KRATOS_GOOGLE_CLIENT_SECRET={{ secret_data.KRATOS_GOOGLE_CLIENT_SECRET }}
           KRATOS_GMAIL_ADDRESS={{ secret_data.KRATOS_GMAIL_ADDRESS }}
           KRATOS_GMAIL_APP_PASSWORD={{ secret_data.KRATOS_GMAIL_APP_PASSWORD }}
-          CENTER_COOKIE_SECRET={{ secret_data.CENTER_COOKIE_SECRET }}
-          CENTER_CSRF_COOKIE_SECRET={{ secret_data.CENTER_CSRF_COOKIE_SECRET }}
+          OATHKEEPER_SHARED_SECRET={{ secret_data.OATHKEEPER_SHARED_SECRET }}
           TRUSTED_CONSENT_CLIENT_IDS={{ secret_data.TRUSTED_CONSENT_CLIENT_IDS }}
       no_log: true
 
@@ -117,7 +125,7 @@
               depends_on:
                 hydra-migrate:
                   condition: service_completed_successfully
-              environment:
+              environment: &hydra-env
                 DSN: ${HYDRA_DSN}
                 SECRETS_SYSTEM_0: ${HYDRA_SYSTEM_SECRET}
           {% if 'HYDRA_SYSTEM_SECRET_OLD' in secret_data %}
@@ -133,12 +141,28 @@
                 URLS_CONSENT: ${SSO_PUBLIC_ORIGIN}/center/consent
                 URLS_LOGOUT: ${SSO_PUBLIC_ORIGIN}/center/logout
                 URLS_ERROR: ${SSO_PUBLIC_ORIGIN}/center/error
-              command: ["serve", "-c", "/etc/config/hydra/hydra.yml", "all"]
+              # Public API only. The admin API has no authentication of its
+              # own, so it runs in hydra-admin, which never joins entry.
+              command: ["serve", "-c", "/etc/config/hydra/hydra.yml", "public"]
               networks:
                 - sso{{ project_postfix }}
                 - entry
               labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'hydra.loadbalancer.server.port=4444'] + traefik_labels_hydra) | to_json }}
               mem_limit: 256M
+              restart: unless-stopped
+
+            hydra-admin:
+              container_name: sso-hydra-admin{{ project_postfix }}
+              image: {{ ecr_location }}/sso-hydra:{{ deploy_tag }}
+              depends_on:
+                hydra-migrate:
+                  condition: service_completed_successfully
+              environment: *hydra-env
+              command: ["serve", "-c", "/etc/config/hydra/hydra.yml", "admin"]
+              networks:
+                - sso{{ project_postfix }}
+              labels: ["traefik.enable=false"]
+              mem_limit: 128M
               restart: unless-stopped
 
             kratos-migrate:
@@ -157,7 +181,7 @@
               depends_on:
                 kratos-migrate:
                   condition: service_completed_successfully
-              environment:
+              environment: &kratos-env
                 DSN: ${KRATOS_DSN}
                 LOG_LEVEL: ${LOG_LEVEL}
                 SECRETS_COOKIE_0: ${KRATOS_COOKIE_SECRET}
@@ -180,6 +204,8 @@
                 SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome
                 SELFSERVICE_ALLOWED_RETURN_URLS_0: ${SSO_PUBLIC_ORIGIN}/center
                 SELFSERVICE_ALLOWED_RETURN_URLS_1: ${SSO_PUBLIC_ORIGIN}/center/welcome
+                SELFSERVICE_ALLOWED_RETURN_URLS_2: ${SSO_PUBLIC_ORIGIN}/oauth2/auth
+                OAUTH2_PROVIDER_OVERRIDE_RETURN_TO: "true"
                 SELFSERVICE_FLOWS_ERROR_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/error
                 SELFSERVICE_FLOWS_SETTINGS_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/settings
                 SELFSERVICE_FLOWS_RECOVERY_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/auth/recovery
@@ -188,13 +214,29 @@
                 SELFSERVICE_FLOWS_LOGOUT_AFTER_DEFAULT_BROWSER_RETURN_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome#signed_out
                 SELFSERVICE_FLOWS_LOGIN_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/welcome
                 SELFSERVICE_FLOWS_REGISTRATION_UI_URL: ${SSO_PUBLIC_ORIGIN}/center/auth/registration
-                OAUTH2_PROVIDER_URL: http://sso-hydra{{ project_postfix }}:4445
-                SERVE_ADMIN_BASE_URL: http://sso-kratos{{ project_postfix }}:4434/
-              command: ["serve", "-c", "/etc/config/kratos/kratos.yml", "--watch-courier"]
+                OAUTH2_PROVIDER_URL: http://sso-hydra-admin{{ project_postfix }}:4445
+                SERVE_ADMIN_BASE_URL: http://sso-kratos-admin{{ project_postfix }}:4434/
+              # Public API only (admin bound to loopback by bind-public-only.yml);
+              # the only courier, so mail is sent once.
+              command: ["serve", "-c", "/etc/config/kratos/kratos.yml", "-c", "/etc/config/kratos/bind-public-only.yml", "--watch-courier"]
               networks:
                 - sso{{ project_postfix }}
                 - entry
               labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'kratos.loadbalancer.server.port=4433'] + traefik_labels_kratos) | to_json }}
+              mem_limit: 256M
+              restart: unless-stopped
+
+            kratos-admin:
+              container_name: sso-kratos-admin{{ project_postfix }}
+              image: {{ ecr_location }}/sso-kratos:{{ deploy_tag }}
+              depends_on:
+                kratos-migrate:
+                  condition: service_completed_successfully
+              environment: *kratos-env
+              command: ["serve", "-c", "/etc/config/kratos/kratos.yml", "-c", "/etc/config/kratos/bind-admin-only.yml"]
+              networks:
+                - sso{{ project_postfix }}
+              labels: ["traefik.enable=false"]
               mem_limit: 256M
               restart: unless-stopped
 
@@ -208,18 +250,43 @@
               mem_limit: 32M
               restart: unless-stopped
 
+            # Admin API proxy: /hydra/admin and /kratos/admin need an sso.admin
+            # token (access rules baked into the image). The rules' upstreams
+            # use the service names hydra-admin / kratos-admin, which only
+            # exist on this environment's sso network.
+            oathkeeper:
+              container_name: sso-oathkeeper{{ project_postfix }}
+              image: {{ ecr_location }}/sso-oathkeeper:{{ deploy_tag }}
+              command: serve --config /etc/oathkeeper/config.yml
+              environment:
+                MUTATORS_HEADER_CONFIG_HEADERS: '{% raw %}{"X-Auth-Subject":"{{ .Subject }}","X-Auth-Email":"{{ .Extra.email }}",{% endraw %}"X-From-Oathkeeper":"${OATHKEEPER_SHARED_SECRET}"}'
+                AUTHENTICATORS_JWT_CONFIG_JWKS_URLS: '["${SSO_PUBLIC_ORIGIN}/.well-known/jwks.json"]'
+                AUTHENTICATORS_JWT_CONFIG_TRUSTED_ISSUERS: '["${SSO_PUBLIC_ORIGIN}"]'
+              depends_on:
+                - hydra-admin
+                - kratos-admin
+              networks:
+                - sso{{ project_postfix }}
+                - entry
+              labels: {{ (['traefik.enable=true', 'traefik.docker.network=entry', 'traefik.http.services.' + traefik_router_prefix + 'oathkeeper.loadbalancer.server.port=4455'] + traefik_labels_oathkeeper) | to_json }}
+              mem_limit: 128M
+              restart: unless-stopped
+
             center:
               container_name: sso-center{{ project_postfix }}
               image: {{ image_name }}
               depends_on:
                 - kratos
+                - kratos-admin
                 - hydra
+                - hydra-admin
               environment:
                 NODE_ENV: production
                 PORT: "3000"
                 NEXT_PUBLIC_ORY_SDK_URL: http://sso-kratos{{ project_postfix }}:4433
-                KRATOS_ADMIN_URL: http://sso-kratos{{ project_postfix }}:4434
-                HYDRA_ADMIN_URL: http://sso-hydra{{ project_postfix }}:4445
+                KRATOS_ADMIN_URL: http://sso-kratos-admin{{ project_postfix }}:4434
+                HYDRA_ADMIN_URL: http://sso-hydra-admin{{ project_postfix }}:4445
+                SSO_PUBLIC_ORIGIN: ${SSO_PUBLIC_ORIGIN}
                 REMEMBER_CONSENT_SESSION_FOR_SECONDS: "3600"
                 TRUSTED_CONSENT_CLIENT_IDS: ${TRUSTED_CONSENT_CLIENT_IDS:-}
               networks:
